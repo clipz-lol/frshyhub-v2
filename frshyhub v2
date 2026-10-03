@@ -202,7 +202,7 @@ local KEYBIND_LABELS = {
 }
 
 -- ============================================================
--- AVATAR CHANGER (BALD FIX — DIRECT PARENT + WELD)
+-- AVATAR CHANGER
 -- ============================================================
 local AvatarChanger = {}
 
@@ -233,17 +233,14 @@ function AvatarChanger.clearCharacter(char)
     end
 end
 
--- Attach accessory via direct parenting + manual weld (works even if AddAccessory is blocked)
 local function attachAccessory(char, humanoid, accessory)
     local clone = accessory:Clone()
     local handle = clone:FindFirstChild("Handle")
     if not handle then
-        -- No handle — just parent it
         clone.Parent = char
         return true
     end
 
-    -- Try AddAccessory first (uses Roblox's proper rig attachment)
     if humanoid then
         local ok = pcall(function() humanoid:AddAccessory(clone) end)
         if ok and clone.Parent then
@@ -251,9 +248,7 @@ local function attachAccessory(char, humanoid, accessory)
         end
     end
 
-    -- Fallback: parent directly and manually weld
     clone.Parent = char
-    -- Find the best attach target based on AccessoryType
     local accType = tostring(clone:GetAttribute("AccessoryType") or
         (clone:FindFirstChildOfClass("Attachment") and "Hat") or "Hat")
     local target
@@ -293,7 +288,6 @@ function AvatarChanger.applyViaApi(userId, hub)
 
     AvatarChanger.clearCharacter(char)
 
-    -- BodyColors
     local newBC = model:FindFirstChildOfClass("BodyColors")
     if newBC then
         pcall(function()
@@ -302,7 +296,6 @@ function AvatarChanger.applyViaApi(userId, hub)
         end)
     end
 
-    -- Recursively find ALL accessories
     local accessories = {}
     for _, item in ipairs(model:GetDescendants()) do
         if item:IsA("Accessory") then table.insert(accessories, item) end
@@ -310,7 +303,6 @@ function AvatarChanger.applyViaApi(userId, hub)
 
     local inserted, failed = 0, 0
 
-    -- Attach every accessory with fallback
     for _, acc in ipairs(accessories) do
         local okAcc = pcall(function()
             attachAccessory(char, humanoid, acc)
@@ -318,7 +310,6 @@ function AvatarChanger.applyViaApi(userId, hub)
         if okAcc then inserted += 1 else failed += 1 end
     end
 
-    -- Shirts, pants, meshes, decals
     for _, item in ipairs(model:GetChildren()) do
         if item:IsA("Shirt") or item:IsA("Pants") or item:IsA("ShirtGraphic")
             or item:IsA("CharacterMesh") then
@@ -990,7 +981,7 @@ function UI.toggle(parent, text, getter, setter, hub)
     return b
 end
 
-function UI.slider(parent, label, min, max, getter, setter)
+function UI.slider(parent, label, min, max, getter, setter, hub)
     local container = Instance.new("Frame")
     container.Size = UDim2.new(1, 0, 0, 46)
     container.BackgroundTransparency = 1
@@ -1028,10 +1019,17 @@ function UI.slider(parent, label, min, max, getter, setter)
             input.Text = tostring(getter())
         end
     end)
+    if hub then
+        hub:registerRefresh(function()
+            local v = getter()
+            lbl.Text = label .. ": " .. tostring(v)
+            if not input:IsFocused() then input.Text = tostring(v) end
+        end)
+    end
     return container
 end
 
-function UI.textInput(parent, label, getter, setter, placeholder)
+function UI.textInput(parent, label, getter, setter, placeholder, hub)
     local container = Instance.new("Frame")
     container.Size = UDim2.new(1, 0, 0, 46)
     container.BackgroundTransparency = 1
@@ -1061,6 +1059,11 @@ function UI.textInput(parent, label, getter, setter, placeholder)
     makeCorner(input, 4)
     makeStroke(input, Util.color3(Theme.Current.Accent), 1)
     input.FocusLost:Connect(function() setter(input.Text) end)
+    if hub then
+        hub:registerRefresh(function()
+            if not input:IsFocused() then input.Text = tostring(getter() or "") end
+        end)
+    end
     return container
 end
 
@@ -1438,6 +1441,46 @@ end
 Slots.loadIndex()
 
 -- ============================================================
+-- AUTO-LOAD SLOT CONFIG
+-- ============================================================
+Slots.AutoLoadFile = "FRShYHub_V2_AutoLoad.json"
+Slots.AutoLoad = {enabled = false, slotId = nil}
+
+function Slots.loadAutoLoad()
+    local ok, data = pcall(function() return readfile(Slots.AutoLoadFile) end)
+    if ok and data and data ~= "" then
+        local ok2, d = pcall(function() return HttpService:JSONDecode(data) end)
+        if ok2 and type(d) == "table" then
+            Slots.AutoLoad.enabled = d.enabled == true
+            Slots.AutoLoad.slotId  = d.slotId
+            return true
+        end
+    end
+    Slots.AutoLoad = {enabled = false, slotId = nil}
+    return false
+end
+
+function Slots.saveAutoLoad()
+    pcall(function()
+        writefile(Slots.AutoLoadFile, HttpService:JSONEncode(Slots.AutoLoad))
+    end)
+end
+
+function Slots.setAutoLoad(slotId)
+    Slots.AutoLoad.slotId  = slotId
+    Slots.AutoLoad.enabled = slotId ~= nil
+    Slots.saveAutoLoad()
+end
+
+function Slots.clearAutoLoad()
+    Slots.AutoLoad.enabled = false
+    Slots.AutoLoad.slotId  = nil
+    Slots.saveAutoLoad()
+end
+
+Slots.loadAutoLoad()
+
+-- ============================================================
 -- BUILD PAGES
 -- ============================================================
 local function buildPages(hub)
@@ -1453,10 +1496,10 @@ local function buildPages(hub)
     UI.toggle(A, "Team Check", function() return s.TeamCheck end, function(v) s.TeamCheck = v end, hub)
     UI.toggle(A, "Wall Check", function() return s.WallCheck end, function(v) s.WallCheck = v end, hub)
     UI.toggle(A, "Snap Aim", function() return s.SnapAimEnabled end, function(v) s.SnapAimEnabled = v end, hub)
-    UI.slider(A, "FOV", 10, 800, function() return s.AimFOV end, function(v) s.AimFOV = v end)
-    UI.slider(A, "Smoothness", 0, 100, function() return s.Smoothness end, function(v) s.Smoothness = v end)
-    UI.slider(A, "Prediction x100", 0, 50, function() return s.Prediction * 100 end, function(v) s.Prediction = v / 100 end)
-    UI.slider(A, "Lock Strength x100", 1, 100, function() return s.AimLockStrength * 100 end, function(v) s.AimLockStrength = v / 100 end)
+    UI.slider(A, "FOV", 10, 800, function() return s.AimFOV end, function(v) s.AimFOV = v end, hub)
+    UI.slider(A, "Smoothness", 0, 100, function() return s.Smoothness end, function(v) s.Smoothness = v end, hub)
+    UI.slider(A, "Prediction x100", 0, 50, function() return s.Prediction * 100 end, function(v) s.Prediction = v / 100 end, hub)
+    UI.slider(A, "Lock Strength x100", 1, 100, function() return s.AimLockStrength * 100 end, function(v) s.AimLockStrength = v / 100 end, hub)
     UI.dropdown(A, "Priority", {"Distance","Health","WorldDistance"}, function() return s.AimPriority end, function(v) s.AimPriority = v end)
     UI.dropdown(A, "Hitbox", {"Head","UpperTorso","LowerTorso"}, function() return s.AimHitbox end, function(v) s.AimHitbox = v end)
 
@@ -1484,14 +1527,14 @@ local function buildPages(hub)
     -- MOVEMENT
     local M = UI.tabs.Movement
     UI.toggle(M, "Fly", function() return s.FlyEnabled end, function(v) s.FlyEnabled = v end, hub)
-    UI.slider(M, "Fly Speed", 10, 500, function() return s.FlySpeed end, function(v) s.FlySpeed = v end)
+    UI.slider(M, "Fly Speed", 10, 500, function() return s.FlySpeed end, function(v) s.FlySpeed = v end, hub)
     UI.toggle(M, "Noclip", function() return s.NoclipEnabled end, function(v) s.NoclipEnabled = v end, hub)
     UI.toggle(M, "Infinite Jump", function() return s.InfiniteJump end, function(v) s.InfiniteJump = v end, hub)
 
     -- COMBAT
     local C = UI.tabs.Combat
     UI.toggle(C, "Rapid Fire", function() return s.RapidFireEnabled end, function(v) s.RapidFireEnabled = v end, hub)
-    UI.slider(C, "Rapid Delay (ms)", 0, 200, function() return s.RapidFireDelay * 1000 end, function(v) s.RapidFireDelay = v / 1000 end)
+    UI.slider(C, "Rapid Delay (ms)", 0, 200, function() return s.RapidFireDelay * 1000 end, function(v) s.RapidFireDelay = v / 1000 end, hub)
     UI.toggle(C, "Super Fast Shoot", function() return s.SuperFastShootEnabled end, function(v) s.SuperFastShootEnabled = v end, hub)
     UI.toggle(C, "WallBang", function() return s.WallBangEnabled end, function(v) s.WallBangEnabled = v end, hub)
 
@@ -1514,9 +1557,7 @@ local function buildPages(hub)
         emptyText = "No players in lobby",
     })
 
-    -- ============================================
     -- AVATAR
-    -- ============================================
     local AV = UI.tabs.Avatar
     local info = Instance.new("TextLabel")
     info.Size = UDim2.new(1, 0, 0, 80)
@@ -1533,7 +1574,7 @@ local function buildPages(hub)
     info.Parent = AV
     makeCorner(info, 6)
 
-    UI.textInput(AV, "Avatar Code", function() return s.LastAvatarCode end, function(v) s.LastAvatarCode = v end, "Paste User ID or URL...")
+    UI.textInput(AV, "Avatar Code", function() return s.LastAvatarCode end, function(v) s.LastAvatarCode = v end, "Paste User ID or URL...", hub)
 
     UI.button(AV, "✨  Apply Avatar Code", function()
         if s.LastAvatarCode == "" then Notify.push("Avatar", "Paste a code first", "warn", 2) return end
@@ -1612,7 +1653,7 @@ local function buildPages(hub)
     UI.textInput(AV, "Spoofed Name", function() return s.SpoofedName end, function(v)
         s.SpoofedName = v
         if s.NameSpooferEnabled then Identity.stop(hub) Identity.start(hub) end
-    end, "Enter name...")
+    end, "Enter name...", hub)
 
     UI.button(AV, "✅  Apply Name", function()
         if s.SpoofedName == "" then Notify.push("Name", "Enter a name", "warn") return end
@@ -1622,8 +1663,11 @@ local function buildPages(hub)
         Notify.push("Name", "Applied: " .. s.SpoofedName, "success")
     end, 30)
 
-    -- SLOTS
+    -- ============================================
+    -- SLOTS  (fully loadable + nameable + auto-load)
+    -- ============================================
     local SL = UI.tabs.Slots
+
     UI.button(SL, "💾  Save Current Config as New Slot", function()
         local id = Slots.newId()
         local name = "Config " .. (#Slots.list() + 1)
@@ -1640,6 +1684,39 @@ local function buildPages(hub)
             Notify.push("Slots", "Save failed", "error")
         end
     end, 32)
+
+    -- Auto-load status banner
+    local autoStatus = Instance.new("TextLabel")
+    autoStatus.Size = UDim2.new(1, 0, 0, 28)
+    autoStatus.BackgroundColor3 = Util.color3(Theme.Current.Panel)
+    autoStatus.TextColor3 = Util.color3(Theme.Current.Text)
+    autoStatus.Font = Enum.Font.Gotham
+    autoStatus.TextSize = 12
+    autoStatus.BorderSizePixel = 0
+    autoStatus.LayoutOrder = 50
+    autoStatus.Parent = SL
+    makeCorner(autoStatus, 6)
+    local function refreshAutoStatus()
+        if Slots.AutoLoad.enabled and Slots.AutoLoad.slotId then
+            local meta = Slots.Index[Slots.AutoLoad.slotId]
+            local nm = meta and meta.name or Slots.AutoLoad.slotId
+            autoStatus.Text = "  ⚡ Auto-load: ON  →  " .. nm
+            autoStatus.TextColor3 = Util.color3(Theme.Current.Accent)
+        else
+            autoStatus.Text = "  ⚡ Auto-load: OFF"
+            autoStatus.TextColor3 = Color3.fromRGB(140, 140, 150)
+        end
+    end
+    hub.flags.refreshAutoStatus = refreshAutoStatus
+    refreshAutoStatus()
+
+    -- Disable auto-load button
+    UI.button(SL, "🚫  Disable Auto-Load", function()
+        Slots.clearAutoLoad()
+        refreshAutoStatus()
+        if hub.flags.refreshSlots then hub.flags.refreshSlots() end
+        Notify.push("Slots", "Auto-load disabled", "warn", 2)
+    end, 30)
 
     local slotSearch = Instance.new("TextBox")
     slotSearch.Size = UDim2.new(1, 0, 0, 30)
@@ -1663,35 +1740,181 @@ local function buildPages(hub)
     sll.Padding = UDim.new(0, 6)
     sll.Parent = slotList
 
+    -- Applies a loaded slot payload to the live state, with side-effects.
+    local function applySlotPayload(data)
+        if type(data) ~= "table" then return end
+
+        -- Keybinds first (convert strings back to EnumItems)
+        if type(data.Keybinds) == "table" then
+            for a, kn in pairs(data.Keybinds) do
+                for _, e in ipairs(Enum.KeyCode:GetEnumItems()) do
+                    if e.Name == kn then s.Keybinds[a] = e break end
+                end
+            end
+        end
+
+        -- Everything else
+        for k, v in pairs(data) do
+            if k ~= "Keybinds" then s[k] = v end
+        end
+
+        -- Side-effects -------------------------------------------------
+
+        -- Silent aim connection
+        if s.AimbotEnabled and s.SilentAim then
+            pcall(function() Aimbot:startSilent(hub) end)
+        else
+            pcall(function() Aimbot:stopSilent(hub) end)
+        end
+
+        -- Theme
+        if s.ThemeName and Theme.Presets[s.ThemeName] then
+            Theme.applyByName(s.ThemeName)
+            pcall(function() UI.retheme() end)
+        end
+
+        -- ESP / attachments / name spoofer
+        pcall(function() ESP:cleanupAll() end)
+        pcall(function() hub:detach() end)
+
+        if s.NameSpooferEnabled then
+            pcall(function() Identity.stop(hub) Identity.start(hub) end)
+        else
+            pcall(function() Identity.stop(hub) end)
+        end
+
+        -- Movement state reset
+        hub.flags.flyActive = false
+        hub.flags.noclipState = nil
+
+        -- Keybind row labels
+        if hub.flags.keybindWaiting and hub.flags.keybindWaiting.refresh then
+            pcall(hub.flags.keybindWaiting.refresh)
+        end
+
+        -- Refresh every registered UI element
+        pcall(function() hub:refreshUI() end)
+    end
+    hub.flags.applySlotPayload = applySlotPayload
+
     local function refreshSlots()
-        for _, ch in ipairs(slotList:GetChildren()) do if ch:IsA("Frame") then ch:Destroy() end end
+        for _, ch in ipairs(slotList:GetChildren()) do
+            if ch:IsA("Frame") then ch:Destroy() end
+        end
         local all = Slots.list()
         local filter = string.lower(slotSearch.Text)
         local found = false
+
         for _, entry in ipairs(all) do
             local id, meta = entry.id, entry.meta
             local name = meta.name or ("Config " .. id)
             if filter == "" or string.find(string.lower(name), filter, 1, true) then
                 found = true
+
                 local row = Instance.new("Frame")
-                row.Size = UDim2.new(1, 0, 0, 64)
+                row.Size = UDim2.new(1, 0, 0, 68)
                 row.BackgroundColor3 = Util.color3(Theme.Current.Panel)
                 row.BorderSizePixel = 0
                 row.Parent = slotList
                 makeCorner(row, 6)
-                local nl = Instance.new("TextLabel")
-                nl.Size = UDim2.new(1, -10, 0, 22)
-                nl.Position = UDim2.new(0, 8, 0, 4)
-                nl.Text = "📁 " .. name
-                nl.TextColor3 = Util.color3(Theme.Current.Accent)
-                nl.BackgroundTransparency = 1
-                nl.Font = Enum.Font.GothamBold
-                nl.TextSize = 13
-                nl.TextXAlignment = Enum.TextXAlignment.Left
-                nl.Parent = row
+
+                -- Editable name TextBox
+                local nameBox = Instance.new("TextBox")
+                nameBox.Size = UDim2.new(1, -16, 0, 22)
+                nameBox.Position = UDim2.new(0, 8, 0, 4)
+                nameBox.Text = name
+                nameBox.TextColor3 = Util.color3(Theme.Current.Accent)
+                nameBox.BackgroundColor3 = Util.color3(Theme.Current.Header)
+                nameBox.BackgroundTransparency = 0.4
+                nameBox.Font = Enum.Font.GothamBold
+                nameBox.TextSize = 13
+                nameBox.TextXAlignment = Enum.TextXAlignment.Left
+                nameBox.BorderSizePixel = 0
+                nameBox.ClearTextOnFocus = false
+                nameBox.Parent = row
+                makeCorner(nameBox, 4)
+                makeStroke(nameBox, Util.color3(Theme.Current.Accent), 1)
+
+                -- Commit rename on focus lost / Enter
+                nameBox.FocusLost:Connect(function(enterPressed)
+                    local newName = nameBox.Text
+                    if newName == "" then
+                        nameBox.Text = name
+                        return
+                    end
+                    if newName == name then return end
+                    if Slots.rename(id, newName) then
+                        meta.name = newName
+                        name = newName
+                        Notify.push("Slots", "Renamed to: " .. newName, "success", 1.5)
+                        if hub.flags.refreshAutoStatus then hub.flags.refreshAutoStatus() end
+                    else
+                        nameBox.Text = name
+                        Notify.push("Slots", "Rename failed", "error", 2)
+                    end
+                end)
+
+                -- Date label
+                local dateLbl = Instance.new("TextLabel")
+                dateLbl.Size = UDim2.new(0, 170, 0, 16)
+                dateLbl.Position = UDim2.new(0, 8, 0, 26)
+                dateLbl.Text = "🕓 " .. tostring(meta.updated or meta.created or "")
+                dateLbl.TextColor3 = Color3.fromRGB(140, 140, 150)
+                dateLbl.BackgroundTransparency = 1
+                dateLbl.Font = Enum.Font.Gotham
+                dateLbl.TextSize = 10
+                dateLbl.TextXAlignment = Enum.TextXAlignment.Left
+                dateLbl.Parent = row
+
+                -- Auto-load toggle button
+                local autoBtn = Instance.new("TextButton")
+                autoBtn.Size = UDim2.new(0, 60, 0, 22)
+                autoBtn.Position = UDim2.new(1, -328, 0, 40)
+                autoBtn.Font = Enum.Font.GothamBold
+                autoBtn.TextSize = 11
+                autoBtn.BorderSizePixel = 0
+                autoBtn.Parent = row
+                makeCorner(autoBtn, 4)
+
+                local isAuto = Slots.AutoLoad.enabled and Slots.AutoLoad.slotId == id
+                if isAuto then
+                    autoBtn.Text = "⚡ Auto"
+                    autoBtn.TextColor3 = Color3.fromRGB(255, 230, 60)
+                    autoBtn.BackgroundColor3 = Color3.fromRGB(60, 50, 0)
+                else
+                    autoBtn.Text = "⚡ Set"
+                    autoBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+                    autoBtn.BackgroundColor3 = Util.color3(Theme.Current.Header)
+                end
+
+                autoBtn.MouseButton1Click:Connect(function()
+                    if Slots.AutoLoad.enabled and Slots.AutoLoad.slotId == id then
+                        Slots.clearAutoLoad()
+                        Notify.push("Slots", "Auto-load cleared", "warn", 2)
+                    else
+                        Slots.setAutoLoad(id)
+                        Notify.push("Slots", "Auto-load set: " .. name, "success", 2)
+                    end
+                    if hub.flags.refreshAutoStatus then hub.flags.refreshAutoStatus() end
+                    refreshSlots()
+                end)
+
+                -- Rename button (focuses the name box)
+                local renameBtn = Instance.new("TextButton")
+                renameBtn.Size = UDim2.new(0, 60, 0, 22)
+                renameBtn.Position = UDim2.new(1, -264, 0, 40)
+                renameBtn.Text = "✏️ Rename"
+                renameBtn.TextColor3 = Color3.fromRGB(255, 200, 60)
+                renameBtn.BackgroundColor3 = Color3.fromRGB(50, 40, 0)
+                renameBtn.Font = Enum.Font.GothamBold
+                renameBtn.TextSize = 11
+                renameBtn.BorderSizePixel = 0
+                renameBtn.Parent = row
+                makeCorner(renameBtn, 4)
+
                 local loadBtn = Instance.new("TextButton")
                 loadBtn.Size = UDim2.new(0, 60, 0, 22)
-                loadBtn.Position = UDim2.new(1, -200, 0, 36)
+                loadBtn.Position = UDim2.new(1, -200, 0, 40)
                 loadBtn.Text = "📂 Load"
                 loadBtn.TextColor3 = Color3.fromRGB(60, 200, 255)
                 loadBtn.BackgroundColor3 = Color3.fromRGB(0, 40, 60)
@@ -1700,9 +1923,10 @@ local function buildPages(hub)
                 loadBtn.BorderSizePixel = 0
                 loadBtn.Parent = row
                 makeCorner(loadBtn, 4)
+
                 local delBtn = Instance.new("TextButton")
                 delBtn.Size = UDim2.new(0, 60, 0, 22)
-                delBtn.Position = UDim2.new(1, -72, 0, 36)
+                delBtn.Position = UDim2.new(1, -72, 0, 40)
                 delBtn.Text = "🗑 Delete"
                 delBtn.TextColor3 = Color3.fromRGB(255, 100, 100)
                 delBtn.BackgroundColor3 = Color3.fromRGB(60, 0, 0)
@@ -1711,26 +1935,28 @@ local function buildPages(hub)
                 delBtn.BorderSizePixel = 0
                 delBtn.Parent = row
                 makeCorner(delBtn, 4)
+
                 loadBtn.MouseButton1Click:Connect(function()
                     local l = Slots.load(id)
                     if l and l.data then
-                        for k, v in pairs(l.data) do
-                            if k == "Keybinds" and type(v) == "table" then
-                                for a, kn in pairs(v) do
-                                    for _, e in ipairs(Enum.KeyCode:GetEnumItems()) do
-                                        if e.Name == kn then s.Keybinds[a] = e break end
-                                    end
-                                end
-                            else
-                                s[k] = v
-                            end
-                        end
-                        hub:refreshUI()
+                        applySlotPayload(l.data)
                         Notify.push("Slots", "Loaded: " .. name, "success")
+                    else
+                        Notify.push("Slots", "Failed to load slot", "error")
                     end
                 end)
+
+                renameBtn.MouseButton1Click:Connect(function()
+                    nameBox:CaptureFocus()
+                end)
+
                 delBtn.MouseButton1Click:Connect(function()
+                    local wasAuto = Slots.AutoLoad.enabled and Slots.AutoLoad.slotId == id
                     Slots.delete(id)
+                    if wasAuto then
+                        Slots.clearAutoLoad()
+                        if hub.flags.refreshAutoStatus then hub.flags.refreshAutoStatus() end
+                    end
                     Notify.push("Slots", "Deleted: " .. name, "warn")
                     refreshSlots()
                 end)
@@ -1746,7 +1972,9 @@ local function buildPages(hub)
             e.TextSize = 12
             e.Parent = slotList
         end
+        if hub.flags.refreshAutoStatus then hub.flags.refreshAutoStatus() end
     end
+
     hub.flags.refreshSlots = refreshSlots
     slotSearch:GetPropertyChangedSignal("Text"):Connect(refreshSlots)
     task.defer(refreshSlots)
@@ -1877,9 +2105,9 @@ local function buildPages(hub)
 
     -- ATTACH
     local AT = UI.tabs.Attach
-    UI.slider(AT, "Offset X", -10, 10, function() return s.AttachOffsetX end, function(v) s.AttachOffsetX = v end)
-    UI.slider(AT, "Offset Y", -10, 10, function() return s.AttachOffsetY end, function(v) s.AttachOffsetY = v end)
-    UI.slider(AT, "Offset Z", -10, 10, function() return s.AttachOffsetZ end, function(v) s.AttachOffsetZ = v end)
+    UI.slider(AT, "Offset X", -10, 10, function() return s.AttachOffsetX end, function(v) s.AttachOffsetX = v end, hub)
+    UI.slider(AT, "Offset Y", -10, 10, function() return s.AttachOffsetY end, function(v) s.AttachOffsetY = v end, hub)
+    UI.slider(AT, "Offset Z", -10, 10, function() return s.AttachOffsetZ end, function(v) s.AttachOffsetZ = v end, hub)
     UI.button(AT, "🔓  Detach", function() hub:detach() end, 30)
     makePlayerList(AT, hub, {
         headerText = "🔗  Click a player to attach to them",
@@ -2016,6 +2244,16 @@ local function main()
             task.wait(0.4)
             Identity.start(hub)
         end
+        -- Re-apply auto-load slot's avatar code on respawn, if it had one
+        if Slots.AutoLoad.enabled and Slots.AutoLoad.slotId then
+            local slotData = Slots.load(Slots.AutoLoad.slotId)
+            if slotData and slotData.data and slotData.data.LastAvatarCode
+               and slotData.data.LastAvatarCode ~= ""
+               and slotData.data.AppearanceLock then
+                task.wait(0.6)
+                pcall(function() AvatarChanger.applyCode(slotData.data.LastAvatarCode, hub) end)
+            end
+        end
     end))
 
     hub:bind(RunService.RenderStepped:Connect(function()
@@ -2098,9 +2336,26 @@ local function main()
 
     if s.SilentAim and s.AimbotEnabled then Aimbot:startSilent(hub) end
 
+    -- ============================================
+    -- AUTO-LOAD SLOT ON BOOT
+    -- ============================================
+    task.defer(function()
+        if not (Slots.AutoLoad.enabled and Slots.AutoLoad.slotId) then return end
+        local slotData = Slots.load(Slots.AutoLoad.slotId)
+        if slotData and slotData.data and hub.flags.applySlotPayload then
+            task.wait(0.5) -- give UI a moment to finish building
+            pcall(function() hub.flags.applySlotPayload(slotData.data) end)
+            local nm = (Slots.Index[Slots.AutoLoad.slotId] and Slots.Index[Slots.AutoLoad.slotId].name) or Slots.AutoLoad.slotId
+            Notify.push("Slots", "Auto-loaded: " .. nm, "success", 3)
+        else
+            Notify.push("Slots", "Auto-load slot missing", "warn", 3)
+            Slots.clearAutoLoad()
+        end
+    end)
+
     Notify.push("FRShYHub V2", "Loaded successfully", "success")
     Notify.push("Tip", "RightShift to toggle menu", "info", 5)
-    Notify.push("Tip", "Avatar: try 156 (has hair!)", "info", 6)
+    Notify.push("Tip", "Slots tab → ⚡ Set to auto-load", "info", 6)
 
     print("[FRShYHub V2] Loaded")
 end
