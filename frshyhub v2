@@ -179,26 +179,27 @@ end
 -- ============================================================
 -- KEYBINDS
 -- ============================================================
-local DEFAULT_KEYBINDS = {
-    ToggleGUI = Enum.KeyCode.RightShift,
-    ToggleAimbot = Enum.KeyCode.Q,
-    ToggleSilentAim = Enum.KeyCode.Z,
-    ToggleESP = Enum.KeyCode.E,
-    ToggleFly = Enum.KeyCode.F,
-    ToggleNoclip = Enum.KeyCode.V,
-    ToggleRapidFire = Enum.KeyCode.R,
-    ToggleSuperFast = Enum.KeyCode.T,
-    ToggleWallBang = Enum.KeyCode.X,
-    ToggleSnapAim = Enum.KeyCode.C,
-    ToggleInfiniteJump = Enum.KeyCode.J,
+local ALL_KEYBIND_ACTIONS = {
+    "ToggleGUI", "ToggleAimbot", "ToggleTriggerBot", "ToggleCameraAssist",
+    "ToggleESP", "ToggleFly", "ToggleNoclip", "ToggleRapidFire",
+    "ToggleSuperFast", "ToggleWallBang", "ToggleSnapAim",
+    "ToggleInfiniteJump", "ToggleWalkSpeed", "ToggleNoBloom",
+    "ToggleRageBot",
 }
+local DEFAULT_KEYBINDS = {}
+for _, a in ipairs(ALL_KEYBIND_ACTIONS) do DEFAULT_KEYBINDS[a] = nil end
+
 local KEYBIND_LABELS = {
     ToggleGUI = "Toggle Menu", ToggleAimbot = "Toggle Aimbot",
-    ToggleSilentAim = "Toggle Silent Aim", ToggleESP = "Toggle ESP",
+    ToggleTriggerBot = "Toggle TriggerBot", ToggleCameraAssist = "Toggle Camera Assist",
+    ToggleESP = "Toggle ESP",
     ToggleFly = "Toggle Fly", ToggleNoclip = "Toggle Noclip",
     ToggleRapidFire = "Toggle Rapid Fire", ToggleSuperFast = "Toggle Super Fast Shoot",
     ToggleWallBang = "Toggle WallBang", ToggleSnapAim = "Toggle Snap Aim",
     ToggleInfiniteJump = "Toggle Infinite Jump",
+    ToggleWalkSpeed = "Toggle Walk Speed",
+    ToggleNoBloom = "Toggle No Bloom",
+    ToggleRageBot = "Toggle RageBot",
 }
 
 -- ============================================================
@@ -215,6 +216,46 @@ function AvatarChanger.parseCode(code)
     local num = tonumber(code)
     if num then return "user", num end
     return nil
+end
+
+local function snapshotAppearance(char)
+    local snap = {accessories = {}, clothing = {}, bodyColors = nil, face = nil}
+    if not char then return snap end
+    for _, child in ipairs(char:GetChildren()) do
+        if child:IsA("Accessory") then
+            table.insert(snap.accessories, child:Clone())
+        elseif child:IsA("Shirt") or child:IsA("Pants") or child:IsA("ShirtGraphic")
+            or child:IsA("CharacterMesh") then
+            table.insert(snap.clothing, child:Clone())
+        elseif child:IsA("BodyColors") then
+            snap.bodyColors = child:Clone()
+        end
+    end
+    local head = char:FindFirstChild("Head")
+    if head then
+        local face = head:FindFirstChild("face")
+        if face then snap.face = face:Clone() end
+    end
+    return snap
+end
+
+local function restoreAppearance(char, snap)
+    if not char or not snap then return end
+    for _, acc in ipairs(snap.accessories) do
+        pcall(function() acc.Parent = char end)
+    end
+    for _, c in ipairs(snap.clothing) do
+        pcall(function() c.Parent = char end)
+    end
+    if snap.bodyColors then
+        pcall(function() snap.bodyColors.Parent = char end)
+    end
+    if snap.face then
+        local head = char:FindFirstChild("Head")
+        if head then
+            pcall(function() snap.face.Parent = head end)
+        end
+    end
 end
 
 function AvatarChanger.clearCharacter(char)
@@ -235,19 +276,17 @@ end
 
 local function attachAccessory(char, humanoid, accessory)
     local clone = accessory:Clone()
-    local handle = clone:FindFirstChild("Handle")
-    if not handle then
-        clone.Parent = char
-        return true
-    end
-
     if humanoid then
         local ok = pcall(function() humanoid:AddAccessory(clone) end)
         if ok and clone.Parent then
             return true
         end
     end
-
+    local handle = clone:FindFirstChild("Handle")
+    if not handle then
+        clone.Parent = char
+        return true
+    end
     clone.Parent = char
     local accType = tostring(clone:GetAttribute("AccessoryType") or
         (clone:FindFirstChildOfClass("Attachment") and "Hat") or "Hat")
@@ -259,10 +298,8 @@ local function attachAccessory(char, humanoid, accessory)
     elseif string.find(accType, "Pant") then
         target = char:FindFirstChild("LowerTorso") or char:FindFirstChild("Torso")
     else
-        target = char:FindFirstChild("Head")
-            or char:FindFirstChild("UpperTorso")
-            or char:FindFirstChild("Torso")
-            or char:FindFirstChild("HumanoidRootPart")
+        target = char:FindFirstChild("Head") or char:FindFirstChild("UpperTorso")
+            or char:FindFirstChild("Torso") or char:FindFirstChild("HumanoidRootPart")
     end
     if target then
         handle.CFrame = target.CFrame
@@ -283,9 +320,17 @@ function AvatarChanger.applyViaApi(userId, hub)
     end
 
     local char = LocalPlayer.Character
-    if not char then return false, 0, 0, "No character" end
+    if not char then
+        pcall(function() model:Destroy() end)
+        return false, 0, 0, "No character"
+    end
     local humanoid = char:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        pcall(function() model:Destroy() end)
+        return false, 0, 0, "No humanoid"
+    end
 
+    local snapshot = snapshotAppearance(char)
     AvatarChanger.clearCharacter(char)
 
     local newBC = model:FindFirstChildOfClass("BodyColors")
@@ -296,18 +341,14 @@ function AvatarChanger.applyViaApi(userId, hub)
         end)
     end
 
-    local accessories = {}
-    for _, item in ipairs(model:GetDescendants()) do
-        if item:IsA("Accessory") then table.insert(accessories, item) end
-    end
-
     local inserted, failed = 0, 0
-
-    for _, acc in ipairs(accessories) do
-        local okAcc = pcall(function()
-            attachAccessory(char, humanoid, acc)
-        end)
-        if okAcc then inserted += 1 else failed += 1 end
+    for _, item in ipairs(model:GetDescendants()) do
+        if item:IsA("Accessory") then
+            local okAcc = pcall(function()
+                return attachAccessory(char, humanoid, item)
+            end)
+            if okAcc then inserted += 1 else failed += 1 end
+        end
     end
 
     for _, item in ipairs(model:GetChildren()) do
@@ -331,9 +372,15 @@ function AvatarChanger.applyViaApi(userId, hub)
         end
     end
 
+    if inserted == 0 then
+        AvatarChanger.clearCharacter(char)
+        restoreAppearance(char, snapshot)
+        pcall(function() model:Destroy() end)
+        return false, 0, failed, "Nothing inserted — restored original"
+    end
+
     pcall(function() model:Destroy() end)
-    print(string.format("[FRShYHub Avatar] User %d: %d inserted, %d failed", userId, inserted, failed))
-    return inserted > 0, inserted, failed
+    return true, inserted, failed
 end
 
 function AvatarChanger.applyCode(code, hub)
@@ -346,17 +393,16 @@ function AvatarChanger.applyCode(code, hub)
         Notify.push("Avatar", "Invalid — use a User ID like 156", "error", 3)
         return false
     end
-
     if kind == "user" then
         Notify.push("Avatar", "Fetching user " .. value .. "...", "info", 2)
-        local ok, inserted, failed = AvatarChanger.applyViaApi(value, hub)
+        local ok, inserted, failed, err = AvatarChanger.applyViaApi(value, hub)
         if ok then
             local msg = string.format("Applied %d items", inserted)
             if failed > 0 then msg = msg .. " (" .. failed .. " failed)" end
             Notify.push("Avatar", msg, failed > 0 and "warn" or "success", 3)
             return true
         else
-            Notify.push("Avatar", "Failed — check F9 console", "error", 4)
+            Notify.push("Avatar", "Failed — " .. tostring(err or "check F9 console"), "error", 4)
             return false
         end
     end
@@ -372,28 +418,62 @@ Hub.__index = Hub
 function Hub.new()
     local self = setmetatable({}, Hub)
     self.state = {
-        AimbotEnabled=false, SilentAim=false, TeamCheck=true, WallCheck=true,
-        AimFOV=120, Smoothness=15, ShowFOV=true, Prediction=0.15,
+        -- Aimbot
+        AimbotEnabled=false, TeamCheck=false, WallCheck=false,
+        AimFOV=120, Smoothness=15, ShowFOV=false, Prediction=0.15,
         AimLockStrength=1.0, AimPriority="Distance", AimHitbox="Head",
         AimFOVColor={0,220,130}, AimFOVShape="Circle",
-        AimFOVTransparency=0.9, AimFOVThickness=2, FriendProtection=true,
+        AimFOVTransparency=0.9, AimFOVThickness=2, FriendProtection=false,
+        SnapAimEnabled=false,
+        -- TriggerBot
+        TriggerBotEnabled=false, TriggerBotDelay=0.05,
+        TriggerBotFOV=15, TriggerBotTeamCheck=false, TriggerBotFriendCheck=false,
+        TriggerBotWallCheck=false, TriggerBotHitbox="Head",
+        TriggerBotHoldTime=0.04,
+        -- Camera Aim Assist
+        CameraAssistEnabled=false, CameraAssistStrength=0.35,
+        CameraAssistFOV=200, CameraAssistTeamCheck=false, CameraAssistFriendCheck=false,
+        CameraAssistWallCheck=false, CameraAssistHitbox="Head",
+        CameraAssistPrediction=0.12, CameraAssistSmoothness=6,
+        -- RageBot (snap-and-hold)
+        RageBotEnabled=false, RageBotHitbox="Head",
+        RageBotTeamCheck=false, RageBotFriendCheck=true,
+        RageBotPrediction=0.16,
+        RageBotAutoFire=true,
+        RageBotFireRate=0.05,
+        RageBotUseActivate=true,
+        RageBotUseClick=true,
+        RageBotUseRemote=false,
+        -- RageBot Body Position
+        RageBotBodySide="Front",
+        RageBotBodyDistance=6,
+        RageBotBodyHeight=2,
+        RageBotBodyFaceTarget=true,
+        -- RageBot Anti Out of Bounds
+        RageBotAntiOOB=true,
+        RageBotAntiOOBFloorY=-50,
+        -- ESP
         ESPEnabled=false, ESPBox=true, ESPName=true, ESPHealth=true,
-        ESPDistance=false, ESPSkeleton=false, ESPTracer=false, ESPChams=false,
-        ESPTeamCheck=true, ESPFriendCheck=true, ESPShowLocal=false,
-        ESPColorMode="Team", ESPCustomColor={255,60,80}, ESPBoxThickness=1,
-        ESPTextSize=13, ESPChamsColor={120,0,255},
+        ESPDistance=false, ESPTracer=false, ESPTeamCheck=false,
+        ESPFriendCheck=false, ESPShowLocal=false, ESPColorMode="Team",
+        ESPCustomColor={255,60,80}, ESPBoxThickness=1, ESPTextSize=13,
+        -- Movement / Combat
         FlyEnabled=false, FlySpeed=60, NoclipEnabled=false, InfiniteJump=false,
+        WalkSpeedEnabled=false, WalkSpeed=32, DefaultWalkSpeed=16,
         RapidFireEnabled=false, RapidFireDelay=0, SuperFastShootEnabled=false,
-        WallBangEnabled=false, SnapAimEnabled=false,
+        WallBangEnabled=false, NoBloomEnabled=false,
+        -- Attach
         AttachTarget=nil, AttachOffsetX=0, AttachOffsetY=2, AttachOffsetZ=3, AttachLockRotation=true,
-        ShowWatermark=true, ShowStats=true, ShowCrosshair=false,
+        AttachPersistent=true,
+        -- Misc / Avatar
+        ShowWatermark=false, ShowStats=false, ShowCrosshair=false,
         CrosshairSize=12, CrosshairColor={0,220,130}, Notifications=true,
         NameSpooferEnabled=false, SpoofedName=LocalPlayer.Name,
-        LastAvatarCode="",
-        AppearanceLock=false,
+        LastAvatarCode="", AppearanceLock=false,
         ProtectedPlayers={}, Keybinds={}, ThemeName="Emerald",
     }
-    for a, k in pairs(DEFAULT_KEYBINDS) do self.state.Keybinds[a] = k end
+    for a in pairs(DEFAULT_KEYBINDS) do self.state.Keybinds[a] = nil end
+    self.state.Keybinds.ToggleGUI = Enum.KeyCode.RightShift
     self.conns = {}
     self.flags = {}
     self.uiRefreshers = {}
@@ -411,6 +491,7 @@ function Hub:getHitboxPart(character, mode)
     if mode == "Head" then return character:FindFirstChild("Head") end
     if mode == "UpperTorso" then return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") end
     if mode == "LowerTorso" then return character:FindFirstChild("LowerTorso") or character:FindFirstChild("Torso") end
+    if mode == "HumanoidRootPart" then return character:FindFirstChild("HumanoidRootPart") end
     return character:FindFirstChild("Head") or character:FindFirstChild("HumanoidRootPart")
 end
 
@@ -441,44 +522,65 @@ end
 -- ============================================================
 -- ATTACH
 -- ============================================================
-local attachState = {conn=nil, target=nil, active=false, origSpeed=16, origJump=50, origJumpH=7.2}
+local attachState = {
+    conn = nil, target = nil, active = false,
+    origSpeed = 16, origJump = 50, origJumpH = 7.2,
+    origPlatformStand = false,
+}
+
 function Hub:attachTo(p)
-    if not p or not Core.isAlive(p) then Notify.push("Attach", "Invalid target", "error", 2) return false end
-    self:detach()
+    if not p then Notify.push("Attach", "Invalid target", "error", 2) return false end
+    if attachState.conn then attachState.conn:Disconnect() attachState.conn = nil end
+    attachState.active = false
+    attachState.target = nil
+
     local char = LocalPlayer.Character
-    if not char then return false end
+    if not char then Notify.push("Attach", "No character", "error", 2) return false end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = Core.getHumanoid(LocalPlayer)
-    if not hrp or not hum then return false end
+    if not hrp or not hum then Notify.push("Attach", "Missing HRP/Humanoid", "error", 2) return false end
+
     attachState.origSpeed = hum.WalkSpeed
     attachState.origJump = hum.JumpPower
     attachState.origJumpH = hum.JumpHeight
+    attachState.origPlatformStand = hum.PlatformStand
     attachState.target = p
     attachState.active = true
+
     hum.PlatformStand = true
     hum.WalkSpeed = 0
+
     attachState.conn = RunService.RenderStepped:Connect(function()
-        if not attachState.active or not Core.isAlive(attachState.target) then self:detach() return end
-        local tHrp = Core.getHRP(attachState.target)
+        if not attachState.active then return end
         local myChar = LocalPlayer.Character
         if not myChar then return end
         local myHrp = myChar:FindFirstChild("HumanoidRootPart")
-        if not myHrp or not tHrp then return end
+        if not myHrp then return end
+        local tgt = attachState.target
+        if not tgt then return end
+        local tHrp = tgt.Character and tgt.Character:FindFirstChild("HumanoidRootPart")
+        if not tHrp then return end
         local s = self.state
         local offset = CFrame.new(s.AttachOffsetX, s.AttachOffsetY, s.AttachOffsetZ)
-        if s.AttachLockRotation then myHrp.CFrame = tHrp.CFrame * offset
-        else myHrp.CFrame = CFrame.new(tHrp.CFrame * offset) * (myHrp.CFrame - myHrp.CFrame.Position) end
+        pcall(function()
+            if s.AttachLockRotation then
+                myHrp.CFrame = tHrp.CFrame * offset
+            else
+                myHrp.CFrame = CFrame.new(tHrp.CFrame * offset) * (myHrp.CFrame - myHrp.CFrame.Position)
+            end
+        end)
     end)
     self:bind(attachState.conn)
-    Notify.push("Attach", "Attached to " .. p.Name, "success", 2)
+    Notify.push("Attach", "Attached to " .. p.Name .. " (persistent)", "success", 2)
     return true
 end
+
 function Hub:detach()
     if attachState.conn then attachState.conn:Disconnect() attachState.conn = nil end
     if attachState.active then
         local hum = Core.getHumanoid(LocalPlayer)
         if hum then
-            hum.PlatformStand = false
+            hum.PlatformStand = attachState.origPlatformStand
             hum.WalkSpeed = attachState.origSpeed
             if hum.UseJumpPower then hum.JumpPower = attachState.origJump else hum.JumpHeight = attachState.origJumpH end
         end
@@ -487,6 +589,8 @@ function Hub:detach()
     attachState.active = false
     attachState.target = nil
 end
+
+function Hub:isAttached() return attachState.active, attachState.target end
 
 -- ============================================================
 -- NAME SPOOF
@@ -548,36 +652,56 @@ function Identity.getDisplayName(p)
 end
 
 -- ============================================================
--- AIMBOT + SILENT AIM
+-- AIMBOT
 -- ============================================================
 local Aimbot = {}
-local silentState = {conn=nil, touchConn=nil}
-local function findTarget(hub)
+
+local function findTarget(hub, opts)
+    opts = opts or {}
     local s = hub.state
     local mouse = UserInputService:GetMouseLocation()
-    local fov = s.AimFOV
-    local wallCheck = s.WallCheck and not s.WallBangEnabled
+    local fov = opts.fov or s.AimFOV
+    local hitboxMode = opts.hitbox or s.AimHitbox
+    local teamCheck = opts.teamCheck ~= nil and opts.teamCheck or s.TeamCheck
+    local friendCheck = opts.friendCheck ~= nil and opts.friendCheck or s.FriendProtection
+    local wallCheck = opts.wallCheck ~= nil and opts.wallCheck or (s.WallCheck and not s.WallBangEnabled)
+    local prediction = opts.prediction or s.Prediction
+    local fromPos = opts.fromPos or Camera.CFrame.Position
+
     local best, bestDist = nil, math.huge
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and Core.isAlive(p) then
             local skip = false
-            if s.FriendProtection and hub:isProtected(p) then skip = true end
-            if s.TeamCheck and LocalPlayer.Team and p.Team and LocalPlayer.Team == p.Team then skip = true end
+            if friendCheck and hub:isProtected(p) then skip = true end
+            if teamCheck and LocalPlayer.Team and p.Team and LocalPlayer.Team == p.Team then skip = true end
             if not skip then
-                local part = hub:getHitboxPart(p.Character, s.AimHitbox)
+                local part = hub:getHitboxPart(p.Character, hitboxMode)
                 if part then
                     local pos = part.Position
                     local hrp = Core.getHRP(p)
-                    if hrp and s.Prediction > 0 then pos = pos + hrp.AssemblyLinearVelocity * s.Prediction end
+                    if hrp and prediction > 0 then
+                        pos = pos + hrp.AssemblyLinearVelocity * prediction
+                    end
                     local sp, onScreen = Camera:WorldToViewportPoint(pos)
-                    if onScreen then
-                        local dist = (Vector2.new(sp.X, sp.Y) - mouse).Magnitude
+                    if onScreen or opts.ignoreScreen then
+                        local dist
+                        if opts.useWorldDistance then
+                            dist = (pos - fromPos).Magnitude
+                        else
+                            dist = (Vector2.new(sp.X, sp.Y) - mouse).Magnitude
+                        end
                         local passWall = true
-                        if wallCheck then passWall = Core.isVisible(Camera.CFrame.Position, part, LocalPlayer.Character) end
+                        if wallCheck then
+                            passWall = Core.isVisible(fromPos, part, LocalPlayer.Character)
+                        end
                         if dist < fov and passWall and dist < bestDist then
                             bestDist = dist
-                            best = {plr=p, part=part, pos=pos, screen=Vector2.new(sp.X, sp.Y), dist=dist,
-                                    worldDist=(pos - Camera.CFrame.Position).Magnitude}
+                            best = {
+                                plr = p, part = part, pos = pos,
+                                screen = Vector2.new(sp.X, sp.Y),
+                                dist = dist,
+                                worldDist = (pos - fromPos).Magnitude,
+                            }
                         end
                     end
                 end
@@ -586,40 +710,13 @@ local function findTarget(hub)
     end
     return best
 end
-function Aimbot:fireSilent(hub)
-    if not hub.state.SilentAim then return end
-    local b = findTarget(hub)
-    if not b then return end
-    local mouse = UserInputService:GetMouseLocation()
-    mousemoverel(b.screen.X - mouse.X, b.screen.Y - mouse.Y)
-    hub.flags.lockedTarget = b.plr
-end
-function Aimbot:startSilent(hub)
-    if silentState.conn then return end
-    silentState.conn = UserInputService.InputBegan:Connect(function(input, gp)
-        if gp then return end
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            if hub.state.SilentAim and hub.state.AimbotEnabled then Aimbot:fireSilent(hub) end
-        end
-    end)
-    hub:bind(silentState.conn)
-    silentState.touchConn = UserInputService.TouchStarted:Connect(function(_, gp)
-        if gp then return end
-        if hub.state.SilentAim and hub.state.AimbotEnabled then Aimbot:fireSilent(hub) end
-    end)
-    hub:bind(silentState.touchConn)
-end
-function Aimbot:stopSilent(hub)
-    if silentState.conn then silentState.conn:Disconnect() silentState.conn = nil end
-    if silentState.touchConn then silentState.touchConn:Disconnect() silentState.touchConn = nil end
-end
+
 function Aimbot:step(hub)
     local s = hub.state
     if not s.AimbotEnabled then hub.flags.lockedTarget = nil return end
     local b = findTarget(hub)
     if not b then hub.flags.lockedTarget = nil return end
     hub.flags.lockedTarget = b.plr
-    if s.SilentAim then return end
     local mouse = UserInputService:GetMouseLocation()
     local dx, dy = b.screen.X - mouse.X, b.screen.Y - mouse.Y
     local lock = s.AimLockStrength or 1
@@ -630,24 +727,114 @@ function Aimbot:step(hub)
         local strength = 0.03 + lock * 0.97
         local eff = Util.clamp(strength * (1 - sf * 0.97), 0.03, 1)
         if math.abs(dx) < 2 and math.abs(dy) < 2 then eff = 1 end
-        if math.abs(dx * eff) > 0.01 or math.abs(dy * eff) > 0.01 then mousemoverel(dx * eff, dy * eff) end
+        if math.abs(dx * eff) > 0.01 or math.abs(dy * eff) > 0.01 then
+            mousemoverel(dx * eff, dy * eff)
+        end
     end
+end
+
+local camAssistState = {lastTime = 0}
+function Aimbot:stepCameraAssist(hub)
+    local s = hub.state
+    if not s.CameraAssistEnabled then return end
+    local now = tick()
+    local dt = now - camAssistState.lastTime
+    if dt < 0.001 then return end
+    camAssistState.lastTime = now
+
+    local b = findTarget(hub, {
+        fov = s.CameraAssistFOV,
+        hitbox = s.CameraAssistHitbox,
+        teamCheck = s.CameraAssistTeamCheck,
+        friendCheck = s.CameraAssistFriendCheck,
+        wallCheck = s.CameraAssistWallCheck,
+        prediction = s.CameraAssistPrediction,
+        useWorldDistance = false,
+    })
+    if not b then return end
+
+    hub.flags.lockedTarget = b.plr
+
+    local camPos = Camera.CFrame.Position
+    local toTarget = b.pos - camPos
+    if toTarget.Magnitude < 0.1 then return end
+
+    local desiredDir = toTarget.Unit
+    local currentDir = Camera.CFrame.LookVector
+
+    local strength = Util.clamp(s.CameraAssistStrength, 0, 1)
+    local smooth = Util.clamp(s.CameraAssistSmoothness, 1, 20)
+    local alpha = Util.clamp(strength * (dt * smooth * 10), 0, 1)
+
+    local blended = (currentDir * (1 - alpha)) + (desiredDir * alpha)
+    if blended.Magnitude < 0.001 then return end
+    local newLook = blended.Unit
+
+    local right = newLook:Cross(Vector3.new(0,1,0))
+    if right.Magnitude < 0.001 then right = Vector3.new(1,0,0) end
+    right = right.Unit
+    local up = right:Cross(newLook).Unit
+    local newCF = CFrame.fromMatrix(camPos, right, up)
+    Camera.CFrame = newCF
+end
+
+local trigState = {conn = nil}
+function Aimbot:tryTrigger(hub)
+    local s = hub.state
+    if not s.TriggerBotEnabled then return end
+    if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return end
+
+    local b = findTarget(hub, {
+        fov = s.TriggerBotFOV,
+        hitbox = s.TriggerBotHitbox,
+        teamCheck = s.TriggerBotTeamCheck,
+        friendCheck = s.TriggerBotFriendCheck,
+        wallCheck = s.TriggerBotWallCheck,
+        prediction = s.Prediction,
+        useWorldDistance = false,
+    })
+    if not b then return end
+    hub.flags.lockedTarget = b.plr
+
+    local m = UserInputService:GetMouseLocation()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(m.X, m.Y, 0, true, game, 0)
+    end)
+    task.wait(s.TriggerBotHoldTime or 0.04)
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(m.X, m.Y, 0, false, game, 0)
+    end)
+end
+
+function Aimbot:startTrigger(hub)
+    if trigState.conn then return end
+    trigState.conn = RunService.RenderStepped:Connect(function()
+        if hub.state.TriggerBotEnabled then
+            pcall(function() Aimbot:tryTrigger(hub) end)
+        end
+    end)
+    hub:bind(trigState.conn)
+end
+
+function Aimbot:stopTrigger(hub)
+    if trigState.conn then trigState.conn:Disconnect() trigState.conn = nil end
+end
+
+function Aimbot:stepAll(hub)
+    Aimbot:step(hub)
+    Aimbot:stepCameraAssist(hub)
 end
 
 -- ============================================================
 -- ESP
 -- ============================================================
-local ESP = {drawings = {}, chams = {}}
+local ESP = {drawings = {}}
 function ESP:cleanup(plr)
     if self.drawings[plr] then for _, d in pairs(self.drawings[plr]) do pcall(function() d:Remove() end) end self.drawings[plr] = nil end
-    if self.chams[plr] then for _, h in pairs(self.chams[plr]) do pcall(function() h:Destroy() end) end self.chams[plr] = nil end
 end
 function ESP:cleanupAll()
     local ks = {}
     for k in pairs(self.drawings) do table.insert(ks, k) end
-    for _, k in ipairs(ks) do self:cleanup(k) end
-    ks = {}
-    for k in pairs(self.chams) do table.insert(ks, k) end
     for _, k in ipairs(ks) do self:cleanup(k) end
 end
 function ESP:colorFor(p, s)
@@ -783,7 +970,6 @@ function ESP:step(hub)
             self:update(p, s, hub)
         else
             if self.drawings[p] then for _, v in pairs(self.drawings[p]) do pcall(function() v.Visible = false end) end end
-            if self.chams[p] then for _, h in pairs(self.chams[p]) do pcall(function() h:Destroy() end) end self.chams[p] = nil end
         end
     end
 end
@@ -792,6 +978,39 @@ end
 -- MOVEMENT
 -- ============================================================
 local Movement = {}
+
+task.spawn(function()
+    task.wait(0.5)
+    local hum = Core.getHumanoid(LocalPlayer)
+    if hum and _G.FRShYHub then
+        _G.FRShYHub.state.DefaultWalkSpeed = hum.WalkSpeed
+    end
+end)
+
+function Movement.walkSpeed(hub)
+    local s = hub.state
+    local hum = Core.getHumanoid(LocalPlayer)
+    if not hum then return end
+
+    if s.WalkSpeedEnabled then
+        if not hub.flags.wsApplied then
+            if not hub.flags.wsSavedDefault then
+                s.DefaultWalkSpeed = hum.WalkSpeed
+                hub.flags.wsSavedDefault = true
+            end
+            hub.flags.wsApplied = true
+        end
+        if math.abs(hum.WalkSpeed - s.WalkSpeed) > 0.01 then
+            hum.WalkSpeed = s.WalkSpeed
+        end
+    else
+        if hub.flags.wsApplied then
+            hub.flags.wsApplied = false
+            hum.WalkSpeed = s.DefaultWalkSpeed
+        end
+    end
+end
+
 function Movement.fly(hub)
     local s = hub.state
     if not s.FlyEnabled then
@@ -912,6 +1131,413 @@ function Combat.wallBang(hub)
 end
 
 -- ============================================================
+-- NO BLOOM
+-- ============================================================
+local noBloomState = {active = false, conn = nil}
+
+local BLOOM_PROPS = {
+    "Spread", "Recoil", "BulletSpread", "AimSpread", "SpreadMultiplier",
+    "RecoilMultiplier", "Kick", "CameraRecoil", "RecoilAmount",
+    "Bloom", "BloomAmount", "WeaponSpread", "HipSpread",
+}
+local BLOOM_NAME_MATCH = {"spread", "recoil", "bloom", "kick", "shake"}
+
+local function zeroToolBloom(tool)
+    if not tool then return end
+    for _, prop in ipairs(BLOOM_PROPS) do
+        pcall(function()
+            if tool[prop] ~= nil then tool[prop] = 0 end
+        end)
+    end
+    for _, d in ipairs(tool:GetDescendants()) do
+        local n = string.lower(d.Name)
+        local match = false
+        for _, key in ipairs(BLOOM_NAME_MATCH) do
+            if string.find(n, key, 1, true) then match = true break end
+        end
+        if match and d:IsA("ValueBase") then
+            pcall(function()
+                if type(d.Value) == "number" then d.Value = 0 end
+            end)
+        end
+    end
+end
+
+function Combat.noBloom(hub)
+    local s = hub.state
+
+    if s.NoBloomEnabled and not noBloomState.active then
+        noBloomState.active = true
+        noBloomState.conn = RunService.RenderStepped:Connect(function()
+            if not hub.state.NoBloomEnabled then return end
+            pcall(function()
+                local pos = Camera.CFrame.Position
+                local look = Camera.CFrame.LookVector
+                Camera.Focus = CFrame.new(pos + look * 1000)
+            end)
+            local char = LocalPlayer.Character
+            if char then
+                local tool = char:FindFirstChildOfClass("Tool")
+                if tool then zeroToolBloom(tool) end
+            end
+        end)
+        hub:bind(noBloomState.conn)
+
+    elseif not s.NoBloomEnabled and noBloomState.active then
+        noBloomState.active = false
+        if noBloomState.conn then
+            noBloomState.conn:Disconnect()
+            noBloomState.conn = nil
+        end
+    end
+end
+
+-- ============================================================
+-- RAGEBOT (snap-and-hold + anti out of bounds)
+-- ============================================================
+local RageBot = {
+    active = false, savedCameraType = nil, lastFire = 0,
+    detectedRemotes = nil, remotesScanned = false,
+    holdTarget = nil,
+    holdOffset = nil,
+    lastSafePosition = nil,
+}
+
+local RAGE_DAMAGE_PROPS = {
+    "Damage", "HeadDamage", "BodyDamage", "DamagePerShot", "HitDamage",
+    "BulletDamage", "DamageMultiplier", "HeadshotMultiplier",
+    "MaxDamage", "MinDamage",
+}
+
+local function boostToolDamage(tool)
+    if not tool then return end
+    for _, prop in ipairs(RAGE_DAMAGE_PROPS) do
+        pcall(function()
+            local v = tool[prop]
+            if type(v) == "number" then
+                if string.find(string.lower(prop), "mult") then
+                    tool[prop] = 9999
+                else
+                    tool[prop] = math.max(v, 9999)
+                end
+            end
+        end)
+    end
+    for _, d in ipairs(tool:GetDescendants()) do
+        local n = string.lower(d.Name)
+        if (string.find(n, "damage", 1, true) or string.find(n, "dmg", 1, true))
+           and d:IsA("ValueBase") then
+            pcall(function()
+                if type(d.Value) == "number" then
+                    if string.find(n, "mult", 1, true) then
+                        d.Value = 9999
+                    else
+                        d.Value = math.max(d.Value, 9999)
+                    end
+                end
+            end)
+        end
+    end
+end
+
+local function aimCameraAt(aimPos)
+    if not aimPos then return end
+    local camPos = Camera.CFrame.Position
+    local toTarget = aimPos - camPos
+    if toTarget.Magnitude < 0.1 then return end
+    local look = toTarget.Unit
+    local right = look:Cross(Vector3.new(0,1,0))
+    if right.Magnitude < 0.001 then right = Vector3.new(1,0,0) end
+    right = right.Unit
+    local up = right:Cross(look).Unit
+    pcall(function()
+        if Camera.CameraType ~= Enum.CameraType.Scriptable then
+            Camera.CameraType = Enum.CameraType.Scriptable
+        end
+        Camera.CFrame = CFrame.fromMatrix(camPos, right, up)
+        Camera.Focus = CFrame.new(camPos + look * 1000)
+    end)
+end
+
+local function moveCursorToScreenPos(screenPos)
+    if not screenPos then return end
+    local current = UserInputService:GetMouseLocation()
+    local dx = screenPos.X - current.X
+    local dy = screenPos.Y - current.Y
+    if math.abs(dx) > 0.5 or math.abs(dy) > 0.5 then
+        pcall(function() mousemoverel(dx, dy) end)
+    end
+end
+
+local function detectFireRemotes()
+    local found = {}
+    local function scan(container)
+        for _, d in ipairs(container:GetDescendants()) do
+            if d:IsA("RemoteEvent") or d:IsA("RemoteFunction") then
+                local n = string.lower(d.Name)
+                if (string.find(n,"fire") or string.find(n,"shoot")
+                    or string.find(n,"hit") or string.find(n,"attack"))
+                    and not string.find(n,"unfire")
+                    and not string.find(n,"firework")
+                    and not string.find(n,"misfire") then
+                    table.insert(found, d)
+                end
+            end
+        end
+    end
+    pcall(scan, game:GetService("ReplicatedStorage"))
+    pcall(scan, game:GetService("Workspace"))
+    return found
+end
+
+local function fireSyntheticClick()
+    local m = UserInputService:GetMouseLocation()
+    pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(m.X, m.Y, 0, true, game, 0)
+    end)
+    task.delay(0.008, function()
+        local m2 = UserInputService:GetMouseLocation()
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(m2.X, m2.Y, 0, false, game, 0)
+        end)
+    end)
+end
+
+local function fireActivate(tool)
+    if not tool then return end
+    pcall(function() tool:Activate() end)
+end
+
+local function fireRemote(remotes, aimPos)
+    if not remotes or #remotes == 0 then return end
+    local origin = Camera.CFrame.Position
+    for _, r in ipairs(remotes) do
+        pcall(function() r:FireServer(aimPos) end)
+        pcall(function() r:FireServer(origin, aimPos) end)
+        pcall(function() r:FireServer((aimPos - origin).Unit) end)
+        pcall(function() r:FireServer(origin, (aimPos - origin).Unit) end)
+        pcall(function() r:FireServer(origin, aimPos, tick()) end)
+        pcall(function() r:FireServer(LocalPlayer.Character.HumanoidRootPart.CFrame, aimPos) end)
+    end
+end
+
+local function rageGatherTargets(hub)
+    local s = hub.state
+    local out = {}
+    local myHrp = Core.getHRP(LocalPlayer)
+    local myPos = myHrp and myHrp.Position or Vector3.new()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and Core.isAlive(p) then
+            local skip = false
+            if s.RageBotFriendCheck and hub:isProtected(p) then skip = true end
+            if s.RageBotTeamCheck and LocalPlayer.Team and p.Team and LocalPlayer.Team == p.Team then skip = true end
+            if not skip then
+                local hrp = Core.getHRP(p)
+                local head = p.Character and p.Character:FindFirstChild("Head")
+                if hrp and head then
+                    table.insert(out, {plr = p, hrp = hrp, head = head, dist = (hrp.Position - myPos).Magnitude})
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b) return a.dist < b.dist end)
+    return out
+end
+
+local function anchorAllParts(char, state)
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            pcall(function() p.Anchored = state end)
+        end
+    end
+end
+
+local function dirToVector(dir)
+    if dir == "Front"      then return Vector3.new(0, 0, -1) end
+    if dir == "Back"       then return Vector3.new(0, 0, 1)  end
+    if dir == "Right"      then return Vector3.new(1, 0, 0)  end
+    if dir == "Left"       then return Vector3.new(-1, 0, 0) end
+    if dir == "FrontRight" then return Vector3.new(1, 0, -1).Unit end
+    if dir == "FrontLeft"  then return Vector3.new(-1, 0, -1).Unit end
+    if dir == "BackRight"  then return Vector3.new(1, 0, 1).Unit end
+    if dir == "BackLeft"   then return Vector3.new(-1, 0, 1).Unit end
+    return Vector3.new(0, 0, -1)
+end
+
+local function faceToward(pos, targetPos)
+    local dir = (targetPos - pos)
+    dir = Vector3.new(dir.X, 0, dir.Z)
+    if dir.Magnitude < 0.001 then
+        return CFrame.new(pos)
+    end
+    return CFrame.lookAt(pos, pos + dir.Unit * 10)
+end
+
+local function rageDisable(hub)
+    if not RageBot.active then return end
+    RageBot.active = false
+    RageBot.holdTarget = nil
+    RageBot.holdOffset = nil
+    RageBot.lastSafePosition = nil
+
+    if RageBot.savedCameraType then
+        pcall(function() Camera.CameraType = RageBot.savedCameraType end)
+        RageBot.savedCameraType = nil
+    end
+
+    pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.Default end)
+
+    local char = LocalPlayer.Character
+    if char then
+        anchorAllParts(char, false)
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function() hum.PlatformStand = false end)
+        end
+    end
+end
+
+function RageBot:step(hub)
+    local s = hub.state
+
+    if not s.RageBotEnabled then
+        rageDisable(hub)
+        return
+    end
+
+    local targets = rageGatherTargets(hub)
+    if #targets == 0 then
+        rageDisable(hub)
+        return
+    end
+
+    local myChar = LocalPlayer.Character
+    if not myChar then rageDisable(hub) return end
+    local myHrp = myChar:FindFirstChild("HumanoidRootPart")
+    local hum = Core.getHumanoid(LocalPlayer)
+    if not myHrp or not hum then rageDisable(hub) return end
+
+    if not self.active then
+        self.active = true
+        self.savedCameraType = Camera.CameraType
+        anchorAllParts(myChar, true)
+        pcall(function() hum.PlatformStand = true end)
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+        pcall(function() Camera.CameraType = Enum.CameraType.Scriptable end)
+        pcall(function() UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter end)
+    end
+
+    if not self.remotesScanned then
+        self.detectedRemotes = detectFireRemotes()
+        self.remotesScanned = true
+    end
+
+    local primary = targets[1]
+    local primaryHrp = primary.hrp
+    if not primaryHrp or not primaryHrp.Parent then return end
+
+    -- ============ BODY POSITION (snap-and-hold) ============
+    if self.holdTarget ~= primary.plr then
+        self.holdTarget = primary.plr
+
+        local dirVec = dirToVector(s.RageBotBodySide or "Front")
+        local dist = s.RageBotBodyDistance or 6
+        local height = s.RageBotBodyHeight or 2
+
+        self.holdOffset = Vector3.new(
+            dirVec.X * dist,
+            height,
+            dirVec.Z * dist
+        )
+    end
+
+    local desiredPos = primaryHrp.Position + self.holdOffset
+
+    -- ============ ANTI OUT OF BOUNDS ============
+    if s.RageBotAntiOOB then
+        local floorY = s.RageBotAntiOOBFloorY or -50
+
+        -- Clamp desired position so we never go below the floor
+        if desiredPos.Y < floorY then
+            desiredPos = Vector3.new(desiredPos.X, floorY, desiredPos.Z)
+        end
+
+        -- Update last safe position when we're well above the floor
+        if myHrp.Position.Y > floorY + 5 then
+            self.lastSafePosition = myHrp.CFrame
+        end
+
+        -- If we somehow fell below the floor, teleport back to safe spot
+        if myHrp.Position.Y < floorY - 10 and self.lastSafePosition then
+            pcall(function()
+                myHrp.CFrame = self.lastSafePosition
+            end)
+            return
+        end
+    end
+
+    local targetLook
+    if s.RageBotBodyFaceTarget ~= false then
+        local lookPos = primaryHrp.Position + Vector3.new(0, self.holdOffset.Y, 0)
+        targetLook = faceToward(desiredPos, lookPos)
+    else
+        local flat = Vector3.new(myHrp.CFrame.LookVector.X, 0, myHrp.CFrame.LookVector.Z)
+        if flat.Magnitude < 0.001 then flat = Vector3.new(0, 0, -1) end
+        targetLook = CFrame.lookAt(desiredPos, desiredPos + flat.Unit)
+    end
+
+    pcall(function()
+        myHrp.CFrame = targetLook
+    end)
+
+    -- ============ AIM ============
+    local hitboxPart = hub:getHitboxPart(primary.plr.Character, s.RageBotHitbox)
+    if not hitboxPart then hitboxPart = primary.head end
+
+    local aimPos
+    if hitboxPart then
+        aimPos = hitboxPart.Position
+        if s.RageBotPrediction > 0 and primaryHrp then
+            aimPos = aimPos + primaryHrp.AssemblyLinearVelocity * s.RageBotPrediction
+        end
+    else
+        aimPos = primary.head.Position
+    end
+
+    aimCameraAt(aimPos)
+
+    local screenPos = Camera:WorldToViewportPoint(aimPos)
+    if screenPos then
+        moveCursorToScreenPos(Vector2.new(screenPos.X, screenPos.Y))
+    end
+
+    -- ============ TOOL PREP ============
+    local tool = myChar:FindFirstChildOfClass("Tool")
+    if tool then
+        pcall(function() zeroToolBloom(tool) end)
+        pcall(function() boostToolDamage(tool) end)
+    end
+
+    -- ============ FIRE ============
+    if s.RageBotAutoFire then
+        local now = tick()
+        local interval = s.RageBotFireRate or 0.05
+        if now - self.lastFire >= interval then
+            self.lastFire = now
+            task.defer(function()
+                if not RageBot.active then return end
+                if s.RageBotUseActivate and tool then fireActivate(tool) end
+                if s.RageBotUseClick then fireSyntheticClick() end
+                if s.RageBotUseRemote and RageBot.detectedRemotes then
+                    fireRemote(RageBot.detectedRemotes, aimPos)
+                end
+            end)
+        end
+    end
+end
+
+-- ============================================================
 -- UI
 -- ============================================================
 local UI = {tabs={}, tabButtons={}, active="Aimbot"}
@@ -966,17 +1592,22 @@ function UI.button(parent, text, callback, height)
 end
 
 function UI.toggle(parent, text, getter, setter, hub)
-    local b = UI.button(parent, text .. ": " .. (getter() and "ON" or "OFF"), function()
-        local ns = not getter()
-        setter(ns)
+    local function paint(b)
+        local on = getter() and true or false
+        b.Text = text .. ": " .. (on and "ON" or "OFF")
+        b.TextColor3 = on and Util.color3(Theme.Current.Accent) or Util.color3(Theme.Current.Text)
+    end
+
+    local b = UI.button(parent, text .. ": OFF", function()
+        local new = not (getter() and true or false)
+        pcall(function() setter(new) end)
+        paint(b)
     end, 30)
-    b.TextColor3 = getter() and Util.color3(Theme.Current.Accent) or Util.color3(Theme.Current.Text)
+
+    paint(b)
+
     if hub then
-        hub:registerRefresh(function()
-            local on = getter()
-            b.Text = text .. ": " .. (on and "ON" or "OFF")
-            b.TextColor3 = on and Util.color3(Theme.Current.Accent) or Util.color3(Theme.Current.Text)
-        end)
+        hub:registerRefresh(function() paint(b) end)
     end
     return b
 end
@@ -1155,7 +1786,7 @@ function UI.init(parent)
     frame.BorderSizePixel = 0
     frame.Active = true
     frame.Draggable = true
-    frame.Visible = false
+    frame.Visible = true
     frame.Parent = parent
     makeCorner(frame, 10)
     local stroke = makeStroke(frame, Util.color3(Theme.Current.Accent), 1.5)
@@ -1220,9 +1851,9 @@ function UI.init(parent)
     contentArea.Parent = frame
     UI.contentArea = contentArea
 
-    local tabNames = {"Aimbot","Visuals","ESP","Movement","Combat","Teleport","Avatar","Slots","Keybinds","Theme","Friends","Attach","Misc"}
+    local tabNames = {"Aimbot","RageBot","Visuals","ESP","Movement","Combat","Teleport","Avatar","Slots","Keybinds","Theme","Friends","Attach","Misc"}
     local tabIcons = {
-        Aimbot="🎯", Visuals="🎨", ESP="👁️", Movement="🏃", Combat="💥",
+        Aimbot="🎯", RageBot="💢", Visuals="🎨", ESP="👁️", Movement="🏃", Combat="💥",
         Teleport="📍", Avatar="👤", Slots="💾", Keybinds="⌨️", Theme="🌈",
         Friends="🛡️", Attach="🔗", Misc="🧪",
     }
@@ -1440,9 +2071,6 @@ function Slots.list()
 end
 Slots.loadIndex()
 
--- ============================================================
--- AUTO-LOAD SLOT CONFIG
--- ============================================================
 Slots.AutoLoadFile = "FRShYHub_V2_AutoLoad.json"
 Slots.AutoLoad = {enabled = false, slotId = nil}
 
@@ -1459,25 +2087,19 @@ function Slots.loadAutoLoad()
     Slots.AutoLoad = {enabled = false, slotId = nil}
     return false
 end
-
 function Slots.saveAutoLoad()
-    pcall(function()
-        writefile(Slots.AutoLoadFile, HttpService:JSONEncode(Slots.AutoLoad))
-    end)
+    pcall(function() writefile(Slots.AutoLoadFile, HttpService:JSONEncode(Slots.AutoLoad)) end)
 end
-
 function Slots.setAutoLoad(slotId)
     Slots.AutoLoad.slotId  = slotId
     Slots.AutoLoad.enabled = slotId ~= nil
     Slots.saveAutoLoad()
 end
-
 function Slots.clearAutoLoad()
     Slots.AutoLoad.enabled = false
     Slots.AutoLoad.slotId  = nil
     Slots.saveAutoLoad()
 end
-
 Slots.loadAutoLoad()
 
 -- ============================================================
@@ -1489,19 +2111,105 @@ local function buildPages(hub)
     -- AIMBOT
     local A = UI.tabs.Aimbot
     UI.toggle(A, "Aimbot", function() return s.AimbotEnabled end, function(v) s.AimbotEnabled = v end, hub)
-    UI.toggle(A, "Silent Aim", function() return s.SilentAim end, function(v)
-        s.SilentAim = v
-        if v then Aimbot:startSilent(hub) else Aimbot:stopSilent(hub) end
+    UI.toggle(A, "Snap Aim", function() return s.SnapAimEnabled end, function(v) s.SnapAimEnabled = v end, hub)
+    UI.toggle(A, "TriggerBot", function() return s.TriggerBotEnabled end, function(v)
+        s.TriggerBotEnabled = v
+        if v then Aimbot:startTrigger(hub) else Aimbot:stopTrigger(hub) end
     end, hub)
+    UI.toggle(A, "Camera Aim Assist", function() return s.CameraAssistEnabled end, function(v) s.CameraAssistEnabled = v end, hub)
     UI.toggle(A, "Team Check", function() return s.TeamCheck end, function(v) s.TeamCheck = v end, hub)
     UI.toggle(A, "Wall Check", function() return s.WallCheck end, function(v) s.WallCheck = v end, hub)
-    UI.toggle(A, "Snap Aim", function() return s.SnapAimEnabled end, function(v) s.SnapAimEnabled = v end, hub)
     UI.slider(A, "FOV", 10, 800, function() return s.AimFOV end, function(v) s.AimFOV = v end, hub)
     UI.slider(A, "Smoothness", 0, 100, function() return s.Smoothness end, function(v) s.Smoothness = v end, hub)
     UI.slider(A, "Prediction x100", 0, 50, function() return s.Prediction * 100 end, function(v) s.Prediction = v / 100 end, hub)
     UI.slider(A, "Lock Strength x100", 1, 100, function() return s.AimLockStrength * 100 end, function(v) s.AimLockStrength = v / 100 end, hub)
     UI.dropdown(A, "Priority", {"Distance","Health","WorldDistance"}, function() return s.AimPriority end, function(v) s.AimPriority = v end)
     UI.dropdown(A, "Hitbox", {"Head","UpperTorso","LowerTorso"}, function() return s.AimHitbox end, function(v) s.AimHitbox = v end)
+
+    UI.button(A, "── TriggerBot ──", function() end, 26)
+    UI.slider(A, "TB FOV", 1, 60, function() return s.TriggerBotFOV end, function(v) s.TriggerBotFOV = v end, hub)
+    UI.slider(A, "TB Hold Time ms", 5, 200, function() return s.TriggerBotHoldTime * 1000 end, function(v) s.TriggerBotHoldTime = v / 1000 end, hub)
+    UI.toggle(A, "TB Team Check", function() return s.TriggerBotTeamCheck end, function(v) s.TriggerBotTeamCheck = v end, hub)
+    UI.toggle(A, "TB Friend Check", function() return s.TriggerBotFriendCheck end, function(v) s.TriggerBotFriendCheck = v end, hub)
+    UI.toggle(A, "TB Wall Check", function() return s.TriggerBotWallCheck end, function(v) s.TriggerBotWallCheck = v end, hub)
+    UI.dropdown(A, "TB Hitbox", {"Head","UpperTorso","LowerTorso"}, function() return s.TriggerBotHitbox end, function(v) s.TriggerBotHitbox = v end)
+
+    UI.button(A, "── Camera Aim Assist ──", function() end, 26)
+    UI.slider(A, "CA Strength x100", 1, 100, function() return s.CameraAssistStrength * 100 end, function(v) s.CameraAssistStrength = v / 100 end, hub)
+    UI.slider(A, "CA FOV", 10, 800, function() return s.CameraAssistFOV end, function(v) s.CameraAssistFOV = v end, hub)
+    UI.slider(A, "CA Smoothness", 1, 20, function() return s.CameraAssistSmoothness end, function(v) s.CameraAssistSmoothness = v end, hub)
+    UI.slider(A, "CA Prediction x100", 0, 50, function() return s.CameraAssistPrediction * 100 end, function(v) s.CameraAssistPrediction = v / 100 end, hub)
+    UI.toggle(A, "CA Team Check", function() return s.CameraAssistTeamCheck end, function(v) s.CameraAssistTeamCheck = v end, hub)
+    UI.toggle(A, "CA Friend Check", function() return s.CameraAssistFriendCheck end, function(v) s.CameraAssistFriendCheck = v end, hub)
+    UI.toggle(A, "CA Wall Check", function() return s.CameraAssistWallCheck end, function(v) s.CameraAssistWallCheck = v end, hub)
+    UI.dropdown(A, "CA Hitbox", {"Head","UpperTorso","LowerTorso"}, function() return s.CameraAssistHitbox end, function(v) s.CameraAssistHitbox = v end)
+
+    -- RAGEBOT
+    local R = UI.tabs.RageBot
+    UI.toggle(R, "RageBot", function() return s.RageBotEnabled end, function(v) s.RageBotEnabled = v end, hub)
+    UI.slider(R, "Prediction x100", 0, 50, function() return s.RageBotPrediction * 100 end, function(v) s.RageBotPrediction = v / 100 end, hub)
+    UI.slider(R, "Fire Interval ms", 10, 200, function() return s.RageBotFireRate * 1000 end, function(v) s.RageBotFireRate = v / 1000 end, hub)
+    UI.toggle(R, "Auto Fire", function() return s.RageBotAutoFire end, function(v) s.RageBotAutoFire = v end, hub)
+
+    UI.button(R, "── Body Position ──", function() end, 26)
+    UI.dropdown(R, "Body Side",
+        {"Front","Back","Left","Right","FrontLeft","FrontRight","BackLeft","BackRight"},
+        function() return s.RageBotBodySide end,
+        function(v) s.RageBotBodySide = v end)
+    UI.slider(R, "Body Distance (studs)", 2, 30, function() return s.RageBotBodyDistance end, function(v) s.RageBotBodyDistance = v end, hub)
+    UI.slider(R, "Body Height (studs)", -5, 15, function() return s.RageBotBodyHeight end, function(v) s.RageBotBodyHeight = v end, hub)
+    UI.toggle(R, "Face Target (rotate body)", function() return s.RageBotBodyFaceTarget end, function(v) s.RageBotBodyFaceTarget = v end, hub)
+
+    UI.button(R, "── Anti Out of Bounds ──", function() end, 26)
+    UI.toggle(R, "Anti Out of Bounds", function() return s.RageBotAntiOOB end, function(v) s.RageBotAntiOOB = v end, hub)
+    UI.slider(R, "Floor Y Level", -200, 50, function() return s.RageBotAntiOOBFloorY end, function(v) s.RageBotAntiOOBFloorY = v end, hub)
+    local oobInfo = Instance.new("TextLabel")
+    oobInfo.Size = UDim2.new(1, 0, 0, 42)
+    oobInfo.BackgroundColor3 = Util.color3(Theme.Current.Panel)
+    oobInfo.TextColor3 = Util.color3(Theme.Current.Text)
+    oobInfo.Font = Enum.Font.Gotham
+    oobInfo.TextSize = 11
+    oobInfo.TextWrapped = true
+    oobInfo.TextXAlignment = Enum.TextXAlignment.Left
+    oobInfo.TextYAlignment = Enum.TextYAlignment.Center
+    oobInfo.BorderSizePixel = 0
+    oobInfo.Text = "  ℹ️  Floor Y = lowest Y you'll snap to.\n  Rivals maps use -50 to -60 by default."
+    oobInfo.Parent = R
+    makeCorner(oobInfo, 6)
+
+    UI.button(R, "── Fire Methods ──", function() end, 26)
+    UI.toggle(R, "Method: Tool:Activate()", function() return s.RageBotUseActivate end, function(v) s.RageBotUseActivate = v end, hub)
+    UI.toggle(R, "Method: Synthetic Click", function() return s.RageBotUseClick end, function(v) s.RageBotUseClick = v end, hub)
+    UI.toggle(R, "Method: Fire Remote Events (⚠ may kick)", function() return s.RageBotUseRemote end, function(v) s.RageBotUseRemote = v end, hub)
+
+    UI.button(R, "── Targeting ──", function() end, 26)
+    UI.toggle(R, "Team Check", function() return s.RageBotTeamCheck end, function(v) s.RageBotTeamCheck = v end, hub)
+    UI.toggle(R, "Friend Check (protects friends)", function() return s.RageBotFriendCheck end, function(v) s.RageBotFriendCheck = v end, hub)
+    UI.dropdown(R, "Hitbox", {"Head","UpperTorso","LowerTorso","HumanoidRootPart"}, function() return s.RageBotHitbox end, function(v) s.RageBotHitbox = v end)
+
+    UI.button(R, "── Diagnostics ──", function() end, 26)
+    UI.button(R, "📋  Print Detected Fire Remotes (F9)", function()
+        local remotes = detectFireRemotes()
+        print("=== Detected fire remotes (" .. #remotes .. ") ===")
+        for _, r in ipairs(remotes) do
+            print(" ", r.ClassName, r:GetFullName())
+        end
+        Notify.push("RageBot", "Printed " .. #remotes .. " remotes to F9", "info", 3)
+    end, 30)
+
+    local rInfo = Instance.new("TextLabel")
+    rInfo.Size = UDim2.new(1, 0, 0, 130)
+    rInfo.BackgroundColor3 = Util.color3(Theme.Current.Panel)
+    rInfo.TextColor3 = Util.color3(Theme.Current.Text)
+    rInfo.Font = Enum.Font.Gotham
+    rInfo.TextSize = 11
+    rInfo.TextWrapped = true
+    rInfo.TextXAlignment = Enum.TextXAlignment.Left
+    rInfo.TextYAlignment = Enum.TextYAlignment.Top
+    rInfo.BorderSizePixel = 0
+    rInfo.Text = "  💢  RageBot (snap-and-hold + Anti-Void)\n\n  Positions your body at a fixed offset from\n  the target. Anti Out of Bounds clamps your\n  Y and teleports you back if you fall below\n  Floor Y. Tune Floor Y per map."
+    rInfo.Parent = R
+    makeCorner(rInfo, 6)
 
     -- VISUALS
     local V = UI.tabs.Visuals
@@ -1531,12 +2239,34 @@ local function buildPages(hub)
     UI.toggle(M, "Noclip", function() return s.NoclipEnabled end, function(v) s.NoclipEnabled = v end, hub)
     UI.toggle(M, "Infinite Jump", function() return s.InfiniteJump end, function(v) s.InfiniteJump = v end, hub)
 
+    UI.button(M, "── Walk Speed ──", function() end, 26)
+    UI.toggle(M, "Walk Speed", function() return s.WalkSpeedEnabled end, function(v)
+        s.WalkSpeedEnabled = v
+        local hum = Core.getHumanoid(LocalPlayer)
+        if hum then
+            if v then
+                s.DefaultWalkSpeed = hum.WalkSpeed
+                hum.WalkSpeed = s.WalkSpeed
+            else
+                hum.WalkSpeed = s.DefaultWalkSpeed
+            end
+        end
+    end, hub)
+    UI.slider(M, "Walk Speed Value", 1, 500, function() return s.WalkSpeed end, function(v)
+        s.WalkSpeed = v
+        if s.WalkSpeedEnabled then
+            local hum = Core.getHumanoid(LocalPlayer)
+            if hum then hum.WalkSpeed = v end
+        end
+    end, hub)
+
     -- COMBAT
     local C = UI.tabs.Combat
     UI.toggle(C, "Rapid Fire", function() return s.RapidFireEnabled end, function(v) s.RapidFireEnabled = v end, hub)
     UI.slider(C, "Rapid Delay (ms)", 0, 200, function() return s.RapidFireDelay * 1000 end, function(v) s.RapidFireDelay = v / 1000 end, hub)
     UI.toggle(C, "Super Fast Shoot", function() return s.SuperFastShootEnabled end, function(v) s.SuperFastShootEnabled = v end, hub)
     UI.toggle(C, "WallBang", function() return s.WallBangEnabled end, function(v) s.WallBangEnabled = v end, hub)
+    UI.toggle(C, "No Bloom (center shots)", function() return s.NoBloomEnabled end, function(v) s.NoBloomEnabled = v end, hub)
 
     -- TELEPORT
     local TP = UI.tabs.Teleport
@@ -1570,7 +2300,7 @@ local function buildPages(hub)
     info.TextYAlignment = Enum.TextYAlignment.Top
     info.BorderSizePixel = 0
     info.LayoutOrder = 1
-    info.Text = "  👤  Avatar Code Loader\n\n  Paste: User ID, or profile URL\n  Example: 156  (Shedletsky — has hair!)\n  Example: https://www.roblox.com/users/156/profile"
+    info.Text = "  👤  Avatar Code Loader\n\n  Paste: User ID, or profile URL\n  Example: 156\n  Example: https://www.roblox.com/users/156/profile"
     info.Parent = AV
     makeCorner(info, 6)
 
@@ -1663,9 +2393,7 @@ local function buildPages(hub)
         Notify.push("Name", "Applied: " .. s.SpoofedName, "success")
     end, 30)
 
-    -- ============================================
-    -- SLOTS  (fully loadable + nameable + auto-load)
-    -- ============================================
+    -- SLOTS
     local SL = UI.tabs.Slots
 
     UI.button(SL, "💾  Save Current Config as New Slot", function()
@@ -1685,7 +2413,6 @@ local function buildPages(hub)
         end
     end, 32)
 
-    -- Auto-load status banner
     local autoStatus = Instance.new("TextLabel")
     autoStatus.Size = UDim2.new(1, 0, 0, 28)
     autoStatus.BackgroundColor3 = Util.color3(Theme.Current.Panel)
@@ -1710,7 +2437,6 @@ local function buildPages(hub)
     hub.flags.refreshAutoStatus = refreshAutoStatus
     refreshAutoStatus()
 
-    -- Disable auto-load button
     UI.button(SL, "🚫  Disable Auto-Load", function()
         Slots.clearAutoLoad()
         refreshAutoStatus()
@@ -1740,11 +2466,8 @@ local function buildPages(hub)
     sll.Padding = UDim.new(0, 6)
     sll.Parent = slotList
 
-    -- Applies a loaded slot payload to the live state, with side-effects.
     local function applySlotPayload(data)
         if type(data) ~= "table" then return end
-
-        -- Keybinds first (convert strings back to EnumItems)
         if type(data.Keybinds) == "table" then
             for a, kn in pairs(data.Keybinds) do
                 for _, e in ipairs(Enum.KeyCode:GetEnumItems()) do
@@ -1752,47 +2475,31 @@ local function buildPages(hub)
                 end
             end
         end
-
-        -- Everything else
         for k, v in pairs(data) do
             if k ~= "Keybinds" then s[k] = v end
         end
-
-        -- Side-effects -------------------------------------------------
-
-        -- Silent aim connection
-        if s.AimbotEnabled and s.SilentAim then
-            pcall(function() Aimbot:startSilent(hub) end)
+        if s.TriggerBotEnabled then
+            pcall(function() Aimbot:startTrigger(hub) end)
         else
-            pcall(function() Aimbot:stopSilent(hub) end)
+            pcall(function() Aimbot:stopTrigger(hub) end)
         end
-
-        -- Theme
         if s.ThemeName and Theme.Presets[s.ThemeName] then
             Theme.applyByName(s.ThemeName)
             pcall(function() UI.retheme() end)
         end
-
-        -- ESP / attachments / name spoofer
         pcall(function() ESP:cleanupAll() end)
         pcall(function() hub:detach() end)
-
+        pcall(function() rageDisable(hub) end)
         if s.NameSpooferEnabled then
             pcall(function() Identity.stop(hub) Identity.start(hub) end)
         else
             pcall(function() Identity.stop(hub) end)
         end
-
-        -- Movement state reset
         hub.flags.flyActive = false
         hub.flags.noclipState = nil
-
-        -- Keybind row labels
         if hub.flags.keybindWaiting and hub.flags.keybindWaiting.refresh then
             pcall(hub.flags.keybindWaiting.refresh)
         end
-
-        -- Refresh every registered UI element
         pcall(function() hub:refreshUI() end)
     end
     hub.flags.applySlotPayload = applySlotPayload
@@ -1810,7 +2517,6 @@ local function buildPages(hub)
             local name = meta.name or ("Config " .. id)
             if filter == "" or string.find(string.lower(name), filter, 1, true) then
                 found = true
-
                 local row = Instance.new("Frame")
                 row.Size = UDim2.new(1, 0, 0, 68)
                 row.BackgroundColor3 = Util.color3(Theme.Current.Panel)
@@ -1818,7 +2524,6 @@ local function buildPages(hub)
                 row.Parent = slotList
                 makeCorner(row, 6)
 
-                -- Editable name TextBox
                 local nameBox = Instance.new("TextBox")
                 nameBox.Size = UDim2.new(1, -16, 0, 22)
                 nameBox.Position = UDim2.new(0, 8, 0, 4)
@@ -1835,13 +2540,9 @@ local function buildPages(hub)
                 makeCorner(nameBox, 4)
                 makeStroke(nameBox, Util.color3(Theme.Current.Accent), 1)
 
-                -- Commit rename on focus lost / Enter
                 nameBox.FocusLost:Connect(function(enterPressed)
                     local newName = nameBox.Text
-                    if newName == "" then
-                        nameBox.Text = name
-                        return
-                    end
+                    if newName == "" then nameBox.Text = name return end
                     if newName == name then return end
                     if Slots.rename(id, newName) then
                         meta.name = newName
@@ -1854,7 +2555,6 @@ local function buildPages(hub)
                     end
                 end)
 
-                -- Date label
                 local dateLbl = Instance.new("TextLabel")
                 dateLbl.Size = UDim2.new(0, 170, 0, 16)
                 dateLbl.Position = UDim2.new(0, 8, 0, 26)
@@ -1866,7 +2566,6 @@ local function buildPages(hub)
                 dateLbl.TextXAlignment = Enum.TextXAlignment.Left
                 dateLbl.Parent = row
 
-                -- Auto-load toggle button
                 local autoBtn = Instance.new("TextButton")
                 autoBtn.Size = UDim2.new(0, 60, 0, 22)
                 autoBtn.Position = UDim2.new(1, -328, 0, 40)
@@ -1899,7 +2598,6 @@ local function buildPages(hub)
                     refreshSlots()
                 end)
 
-                -- Rename button (focuses the name box)
                 local renameBtn = Instance.new("TextButton")
                 renameBtn.Size = UDim2.new(0, 60, 0, 22)
                 renameBtn.Position = UDim2.new(1, -264, 0, 40)
@@ -1981,8 +2679,59 @@ local function buildPages(hub)
 
     -- KEYBINDS
     local K = UI.tabs.Keybinds
-    local order = {"ToggleGUI","ToggleAimbot","ToggleSilentAim","ToggleESP","ToggleFly","ToggleNoclip","ToggleRapidFire","ToggleSuperFast","ToggleWallBang","ToggleSnapAim","ToggleInfiniteJump"}
+    local order = ALL_KEYBIND_ACTIONS
     UI.button(K, "⌨️  Click a key button to rebind", function() end, 32)
+
+    local function clearAllKeybinds()
+        for _, a in ipairs(ALL_KEYBIND_ACTIONS) do
+            s.Keybinds[a] = nil
+        end
+        s.Keybinds.ToggleGUI = Enum.KeyCode.RightShift
+        if hub.flags.keybindWaiting and hub.flags.keybindWaiting.refresh then
+            hub.flags.keybindWaiting.refresh()
+        end
+        Notify.push("Keybinds", "All keybinds cleared (menu = RightShift)", "warn", 2)
+    end
+
+    local function disableAllToggles()
+        local featFlags = {
+            "AimbotEnabled","SnapAimEnabled","TriggerBotEnabled","CameraAssistEnabled",
+            "TeamCheck","WallCheck","ESPEnabled","ESPTeamCheck","ESPFriendCheck",
+            "FlyEnabled","NoclipEnabled","InfiniteJump","WalkSpeedEnabled",
+            "RapidFireEnabled","SuperFastShootEnabled","WallBangEnabled","NoBloomEnabled",
+            "RageBotEnabled",
+            "ShowFOV","ShowWatermark","ShowCrosshair","NameSpooferEnabled",
+            "AppearanceLock","FriendProtection",
+            "TriggerBotTeamCheck","TriggerBotFriendCheck","TriggerBotWallCheck",
+            "CameraAssistTeamCheck","CameraAssistFriendCheck","CameraAssistWallCheck",
+            "RageBotTeamCheck","RageBotFriendCheck","RageBotAutoFire",
+        }
+        for _, k in ipairs(featFlags) do s[k] = false end
+
+        pcall(function() Aimbot:stopTrigger(hub) end)
+        pcall(function() hub:detach() end)
+        pcall(function() ESP:cleanupAll() end)
+        pcall(function() Identity.stop(hub) end)
+        pcall(function() rageDisable(hub) end)
+        local hum = Core.getHumanoid(LocalPlayer)
+        if hum then hum.WalkSpeed = s.DefaultWalkSpeed end
+        hub.flags.wsApplied = false
+        hub.flags.wsSavedDefault = false
+        hub.flags.flyActive = false
+        hub.flags.noclipState = nil
+
+        pcall(function() hub:refreshUI() end)
+        Notify.push("Master", "All features disabled", "warn", 2.5)
+    end
+
+    UI.button(K, "🚫  Clear All Keybinds (set to None)", function()
+        clearAllKeybinds()
+    end, 32)
+
+    UI.button(K, "⛔  Disable All Features (turn everything OFF)", function()
+        disableAllToggles()
+    end, 32)
+
     local waitingForAction = nil
     local rowButtons = {}
     local function keyDisplay(k)
@@ -2023,11 +2772,7 @@ local function buildPages(hub)
         keyBtn.TextColor3 = Util.color3(Theme.Current.Accent)
         table.insert(rowButtons, {action=action, button=keyBtn, label=lbl})
     end
-    UI.button(K, "🔄  Reset All Keybinds to Default", function()
-        for a, k in pairs(DEFAULT_KEYBINDS) do s.Keybinds[a] = k end
-        refreshKeybindRows()
-        Notify.push("Keybinds", "Reset", "success")
-    end, 32)
+
     hub.flags.keybindWaiting = {
         get = function() return waitingForAction end,
         clear = function() waitingForAction = nil end,
@@ -2110,7 +2855,7 @@ local function buildPages(hub)
     UI.slider(AT, "Offset Z", -10, 10, function() return s.AttachOffsetZ end, function(v) s.AttachOffsetZ = v end, hub)
     UI.button(AT, "🔓  Detach", function() hub:detach() end, 30)
     makePlayerList(AT, hub, {
-        headerText = "🔗  Click a player to attach to them",
+        headerText = "🔗  Click a player to attach to them (persistent)",
         prefix = "🔗",
         placeholder = "🔎  Search players...",
         onPlayerClick = function(p) hub:attachTo(p) end,
@@ -2133,17 +2878,24 @@ function Hub:goLegit()
     s.AimbotEnabled = false s.FlyEnabled = false s.NoclipEnabled = false
     s.RapidFireEnabled = false s.SuperFastShootEnabled = false
     s.WallBangEnabled = false s.SnapAimEnabled = false s.ESPEnabled = false
-    s.InfiniteJump = false s.NameSpooferEnabled = false s.SilentAim = false
-    s.AppearanceLock = false
+    s.InfiniteJump = false s.NameSpooferEnabled = false
+    s.TriggerBotEnabled = false s.CameraAssistEnabled = false
+    s.WalkSpeedEnabled = false s.AppearanceLock = false
+    s.NoBloomEnabled = false s.RageBotEnabled = false
     task.wait(0.1)
-    pcall(function() Aimbot:stopSilent(self) end)
+    pcall(function() Aimbot:stopTrigger(self) end)
+    pcall(function() rageDisable(self) end)
     self:detach()
     Identity.stop(self)
+    local hum = Core.getHumanoid(LocalPlayer)
+    if hum then hum.WalkSpeed = s.DefaultWalkSpeed end
     if wbState.active then
         for o, v in pairs(wbState.originals) do pcall(function() if o and o.Parent then o.CanQuery = v end end) end
         wbState.originals = {}
         wbState.active = false
     end
+    if noBloomState.conn then pcall(function() noBloomState.conn:Disconnect() end) noBloomState.conn = nil end
+    noBloomState.active = false
     if rapidConn then rapidConn:Disconnect() rapidConn = nil end
     rapidRunning = false
     if sfConn then sfConn:Disconnect() sfConn = nil end
@@ -2190,10 +2942,14 @@ local function main()
     local actions = {
         ToggleGUI = function() UI.frame.Visible = not UI.frame.Visible end,
         ToggleAimbot = function() s.AimbotEnabled = not s.AimbotEnabled Notify.push("Aimbot", s.AimbotEnabled and "ON" or "OFF", s.AimbotEnabled and "success" or "warn", 1.5) end,
-        ToggleSilentAim = function()
-            s.SilentAim = not s.SilentAim
-            if s.SilentAim then Aimbot:startSilent(hub) Notify.push("Silent Aim", "ON", "success", 1.5)
-            else Aimbot:stopSilent(hub) Notify.push("Silent Aim", "OFF", "warn", 1.5) end
+        ToggleTriggerBot = function()
+            s.TriggerBotEnabled = not s.TriggerBotEnabled
+            if s.TriggerBotEnabled then Aimbot:startTrigger(hub) else Aimbot:stopTrigger(hub) end
+            Notify.push("TriggerBot", s.TriggerBotEnabled and "ON" or "OFF", s.TriggerBotEnabled and "success" or "warn", 1.5)
+        end,
+        ToggleCameraAssist = function()
+            s.CameraAssistEnabled = not s.CameraAssistEnabled
+            Notify.push("Camera Assist", s.CameraAssistEnabled and "ON" or "OFF", s.CameraAssistEnabled and "success" or "warn", 1.5)
         end,
         ToggleESP = function() s.ESPEnabled = not s.ESPEnabled Notify.push("ESP", s.ESPEnabled and "ON" or "OFF", s.ESPEnabled and "success" or "warn", 1.5) end,
         ToggleFly = function() s.FlyEnabled = not s.FlyEnabled Notify.push("Fly", s.FlyEnabled and "ON" or "OFF", s.FlyEnabled and "success" or "warn", 1.5) end,
@@ -2203,6 +2959,27 @@ local function main()
         ToggleWallBang = function() s.WallBangEnabled = not s.WallBangEnabled Notify.push("WallBang", s.WallBangEnabled and "ON" or "OFF", s.WallBangEnabled and "success" or "warn", 1.5) end,
         ToggleSnapAim = function() s.SnapAimEnabled = not s.SnapAimEnabled Notify.push("Snap Aim", s.SnapAimEnabled and "ON" or "OFF", s.SnapAimEnabled and "success" or "warn", 1.5) end,
         ToggleInfiniteJump = function() s.InfiniteJump = not s.InfiniteJump Notify.push("Infinite Jump", s.InfiniteJump and "ON" or "OFF", s.InfiniteJump and "success" or "warn", 1.5) end,
+        ToggleNoBloom = function()
+            s.NoBloomEnabled = not s.NoBloomEnabled
+            Notify.push("No Bloom", s.NoBloomEnabled and "ON" or "OFF", s.NoBloomEnabled and "success" or "warn", 1.5)
+        end,
+        ToggleRageBot = function()
+            s.RageBotEnabled = not s.RageBotEnabled
+            Notify.push("RageBot", s.RageBotEnabled and "ON" or "OFF", s.RageBotEnabled and "success" or "warn", 1.5)
+        end,
+        ToggleWalkSpeed = function()
+            s.WalkSpeedEnabled = not s.WalkSpeedEnabled
+            local hum = Core.getHumanoid(LocalPlayer)
+            if hum then
+                if s.WalkSpeedEnabled then
+                    s.DefaultWalkSpeed = hum.WalkSpeed
+                    hum.WalkSpeed = s.WalkSpeed
+                else
+                    hum.WalkSpeed = s.DefaultWalkSpeed
+                end
+            end
+            Notify.push("Walk Speed", s.WalkSpeedEnabled and "ON" or "OFF", s.WalkSpeedEnabled and "success" or "warn", 1.5)
+        end,
     }
 
     local debounce = {}
@@ -2222,7 +2999,7 @@ local function main()
         local code = input.KeyCode
         if code == Enum.KeyCode.Unknown then return end
         for action, key in pairs(s.Keybinds) do
-            if key == code then
+            if key == code and key ~= nil then
                 if debounce[action] then return end
                 debounce[action] = true
                 task.delay(0.15, function() debounce[action] = false end)
@@ -2237,14 +3014,28 @@ local function main()
 
     hub:bind(LocalPlayer.CharacterAdded:Connect(function()
         task.wait(0.4)
-        hub:detach()
         hub.flags.flyActive = false
         hub.flags.noclipState = nil
+        hub.flags.wsApplied = false
+        RageBot.active = false
+        RageBot.savedCameraType = nil
+        RageBot.remotesScanned = false
+        RageBot.detectedRemotes = nil
+        RageBot.holdTarget = nil
+        RageBot.holdOffset = nil
+        RageBot.lastSafePosition = nil
+        local hum = Core.getHumanoid(LocalPlayer)
+        if hum then
+            s.DefaultWalkSpeed = hum.WalkSpeed
+            if s.WalkSpeedEnabled then
+                hum.WalkSpeed = s.WalkSpeed
+                hub.flags.wsApplied = true
+            end
+        end
         if s.NameSpooferEnabled then
             task.wait(0.4)
             Identity.start(hub)
         end
-        -- Re-apply auto-load slot's avatar code on respawn, if it had one
         if Slots.AutoLoad.enabled and Slots.AutoLoad.slotId then
             local slotData = Slots.load(Slots.AutoLoad.slotId)
             if slotData and slotData.data and slotData.data.LastAvatarCode
@@ -2257,16 +3048,17 @@ local function main()
     end))
 
     hub:bind(RunService.RenderStepped:Connect(function()
-        pcall(function()
-            Aimbot:step(hub)
-            ESP:step(hub)
-            Movement.fly(hub)
-            Movement.noclip(hub)
-            Movement.infiniteJump(hub)
-            Combat.rapidFire(hub)
-            Combat.superFast(hub)
-            Combat.wallBang(hub)
-        end)
+        pcall(function() Aimbot:stepAll(hub) end)
+        pcall(function() RageBot:step(hub) end)
+        pcall(function() ESP:step(hub) end)
+        pcall(function() Movement.fly(hub) end)
+        pcall(function() Movement.noclip(hub) end)
+        pcall(function() Movement.walkSpeed(hub) end)
+        pcall(function() Movement.infiniteJump(hub) end)
+        pcall(function() Combat.rapidFire(hub) end)
+        pcall(function() Combat.superFast(hub) end)
+        pcall(function() Combat.wallBang(hub) end)
+        pcall(function() Combat.noBloom(hub) end)
     end))
 
     local fovFrame = Instance.new("Frame")
@@ -2278,7 +3070,7 @@ local function main()
     fovCorner.CornerRadius = UDim.new(1,0)
     fovCorner.Parent = fovFrame
     hub:bind(RunService.RenderStepped:Connect(function()
-        fovFrame.Visible = s.ShowFOV and s.AimbotEnabled
+        fovFrame.Visible = s.ShowFOV and (s.AimbotEnabled or s.TriggerBotEnabled or s.CameraAssistEnabled)
         local size = s.AimFOV * 2
         fovFrame.Size = UDim2.new(0, size, 0, size)
         fovFrame.Position = UDim2.new(0.5, -s.AimFOV, 0.5, -s.AimFOV)
@@ -2329,21 +3121,27 @@ local function main()
     wm.BorderSizePixel = 0
     wm.Parent = gui
     makeCorner(wm, 6)
+    wm.Active = true
+    local wmBtn = Instance.new("TextButton")
+    wmBtn.Size = UDim2.new(1, 0, 1, 0)
+    wmBtn.BackgroundTransparency = 1
+    wmBtn.Text = ""
+    wmBtn.Parent = wm
+    wmBtn.MouseButton1Click:Connect(function()
+        UI.frame.Visible = not UI.frame.Visible
+    end)
     hub:bind(RunService.RenderStepped:Connect(function()
-        wm.Visible = s.ShowWatermark
+        wm.Visible = true
         wm.TextColor3 = Util.color3(Theme.Current.Accent)
     end))
 
-    if s.SilentAim and s.AimbotEnabled then Aimbot:startSilent(hub) end
+    if s.TriggerBotEnabled then Aimbot:startTrigger(hub) end
 
-    -- ============================================
-    -- AUTO-LOAD SLOT ON BOOT
-    -- ============================================
     task.defer(function()
         if not (Slots.AutoLoad.enabled and Slots.AutoLoad.slotId) then return end
         local slotData = Slots.load(Slots.AutoLoad.slotId)
         if slotData and slotData.data and hub.flags.applySlotPayload then
-            task.wait(0.5) -- give UI a moment to finish building
+            task.wait(0.5)
             pcall(function() hub.flags.applySlotPayload(slotData.data) end)
             local nm = (Slots.Index[Slots.AutoLoad.slotId] and Slots.Index[Slots.AutoLoad.slotId].name) or Slots.AutoLoad.slotId
             Notify.push("Slots", "Auto-loaded: " .. nm, "success", 3)
@@ -2353,9 +3151,9 @@ local function main()
         end
     end)
 
-    Notify.push("FRShYHub V2", "Loaded successfully", "success")
-    Notify.push("Tip", "RightShift to toggle menu", "info", 5)
-    Notify.push("Tip", "Slots tab → ⚡ Set to auto-load", "info", 6)
+    Notify.push("FRShYHub V2", "Loaded — everything OFF by default", "success")
+    Notify.push("Tip", "Toggle menu with RightShift or click the watermark", "info", 6)
+    Notify.push("Tip", "RageBot now has Anti Out of Bounds + Body Position", "info", 6)
 
     print("[FRShYHub V2] Loaded")
 end
